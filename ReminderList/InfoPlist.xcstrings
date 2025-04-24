@@ -3,17 +3,17 @@
   "strings" : {
     "CFBundleDisplayName" : {
       "comment" : "Bundle display name",
-      "extractionState" : "stale",
+      "extractionState" : "extracted_with_value",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "OneThing Reminder\n"
+            "value" : "OneThing Reminder"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "轻提醒"
           }
         }

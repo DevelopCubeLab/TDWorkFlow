@@ -3,9 +3,6 @@ import UIKit
 import CryptoKit
 import MachO
 
-// com.cisc0freak.cardio
-// ca.bomberfish.CAPerfHudSwift
-
 class WorkFlowController {
     
     private let workUtils = WorkUtils()
@@ -14,9 +11,11 @@ class WorkFlowController {
     private func calculateScore(for work: Work, expected: Bool, path: String) -> Double {
         var baseScore: Double = 50
 
-        // Positive scoring for expected result
+        // Positive scoring for expected result; negative for unexpected
         if work.isValid == expected {
             baseScore += 3
+        } else {
+            baseScore -= 10
         }
 
         // Positive scoring for fast detection
@@ -75,14 +74,29 @@ class WorkFlowController {
         let noise = Double.random(in: -1.0...1.0)
         // Runtime-specific scoring
         if path == "jit" {
-            if !work.isValid { baseScore -= 10 } else { baseScore += 5 }
+            // JIT is expected to be disabled; work.isValid means JIT is disabled (good)
+            if work.isValid { baseScore -= 10 } else { baseScore += 5 }
         } else if path == "sandbox" {
-            if !work.isValid { baseScore -= 15 } else { baseScore += 4 }
+            // Sandbox escape not detected is good (work.isValid == true)
+            if work.isValid { baseScore += 4 } else { baseScore -= 15 }
         } else if path == "env" {
-            if !work.isValid { baseScore -= 5 } else { baseScore += 2 }
+            // No suspicious env vars (work.isValid == true) is good
+            if work.isValid { baseScore += 2 } else { baseScore -= 5 }
         } else if path == "dylibs" {
-            if !work.isValid { baseScore -= 20 } else { baseScore += 2 }
+            // No suspicious dylibs (work.isValid == true) is good
+            if work.isValid { baseScore += 2 } else { baseScore -= 20 }
         }
+
+#if DEBUG
+        // Add score deduction if forbidden bundle ID launch is detected
+        if path.hasPrefix("BundleIDCheck/Forbidden") && !work.isValid {
+            baseScore -= 45
+        }
+        if path.hasPrefix("BundleIDCheck/HookDetection") && !work.isValid {
+            baseScore -= 50
+        }
+#endif
+
         return max(0, min(100, baseScore + noise))
     }
     
@@ -210,6 +224,9 @@ class WorkFlowController {
             "/var/mobile/Library/HTTPStorages/com.tigisoftware.Filza": false,
             "/private/var/mobile/Library/SplashBoard/Snapshots/com.tigisoftware.Filza": false,
             "/private/var/mobile/Library/Saved Application State/com.tigisoftware.Filza.savedState": false,
+            "/var/mobile/Documents/settings.fzs": false,
+            // Filza backup Because if users clean up the var directory every time, then their Filza will lose the configuration file.
+            // Therefore, in order to prevent the loss of the configuration file, users need to back up Filza's configuration first, and then we can check Filza backup file path.
             
             "/var/mobile/Library/Preferences/com.tigisoftware.ADManager.plist": false, // com.tigisoftware.ADManager
             "/private/var/mobile/Library/ADManager": false, // com.tigisoftware.ADManager
@@ -374,6 +391,7 @@ class WorkFlowController {
             "zbra",
             "filza", // com.tigisoftware.Filza
             "adm", // com.tigisoftware.ADManager
+            "santander", // com.serena.santanderfm
             "mterminal", // com.officialscheduler.mterminal
             "trapp", // wiki.qaq.trapp
             "legizmo", // app.legizmo
@@ -385,7 +403,8 @@ class WorkFlowController {
             "helium", // com.leemin.helium
             "Battery-Life_Cydia", // com.rbtdigital.BatteryLife
             "floatingball", // com.mumu.iosshare
-            "netfenceapp" // com.foxfort.NetFenceApp
+            "netfenceapp", // com.foxfort.NetFenceApp
+            "SuperVip" // com.lenglengyu.supervip
         ]
 
         let globalStart = Date()
@@ -470,11 +489,60 @@ class WorkFlowController {
         
         let bundleResults = checkBundleFiles(expectedCount: expectedBundleFiles.count, expectedFiles: expectedBundleFiles)
         result.merge(bundleResults) { _, new in new }
-        let forbiddenPrefixes = ["lib", "tweak", "substrate", "NATHANLR", "dylib", "使用全能签签名", "SignedByEsign"] // Files that should not appear in bundle
-        let forbiddenResults = checkUnexpectedBundleFiles(forbiddenPrefixes: forbiddenPrefixes)
+        // Files that should not appear in bundle
+        let forbiddenPrefixes = ["lib", // This depends on whether your app includes
+                                 "tweak",
+                                 "substrate",
+                                 "Cydia",
+                                 "FakeTools", // com.xuuz.faketools.plist
+                                 "NATHANLR", // NathanLR mid-jailbreak
+                                 "bak", // TrollFools process file
+                                 "dylib", // If the app uses dynamic libraries, it needs to be excluded here
+                                 "使用全能签签名", // Traces left by the re-signature apps
+                                 "SignedByEsign" // Traces left by the re-signature apps
+        ]
+        let forbiddenResults = checkUnexpectedBundleFiles(forbiddenPrefixes: forbiddenPrefixes, allowedFiles: expectedBundleFiles)
         result.merge(forbiddenResults) { _, new in new }
         
         result["Bundle/BinaryHash"] = checkAppBinaryHash()
+        result["App/VersionCheck"] = checkAppVersion(expectedVersion: "1.0")
+        
+        let versionCheck = checkSystemVersionIntegrity()
+        result["Runtime/SystemVersionCheck"] = WorkFlow(
+            work: versionCheck,
+            expectation: true,
+            score: controller.calculateScore(for: versionCheck, expected: true, path: "version_check_runtime")
+        )
+        
+        let sandboxAllowedFiles = ["Library", "Documents", "tmp"]
+        let sandboxForbiddenPrefixes = ["cydia", "substrate", "jailbreak", "Troll", "TweakInject", "Tweaks"]
+
+        // Run sandbox file integrity detection
+        let sandboxResults = WorkFlowController.checkSandboxIntegrity(
+            allowedFiles: sandboxAllowedFiles,
+            forbiddenPrefixes: sandboxForbiddenPrefixes
+        )
+
+        result.merge(sandboxResults) { _, new in new }
+        
+        let userDefaultsAllowedKeys = ["AppTheme", "UserSettings", TodoStorageController.todoStorageKey] // add your app need storage key
+        
+        let userDefaultsForbiddenKeys = [
+            "substrate",
+            "jailbreak",
+            "cydia",
+            "troll",
+            "DisableSecureTextEntryEnabled",
+            ""
+        ]
+        
+        // Run UserDefaults detection
+        let userDefaultsResults = WorkFlowController.checkUserDefaultsIntegrity(
+            allowedKeys: userDefaultsAllowedKeys,
+            forbiddenKeys: userDefaultsForbiddenKeys
+        )
+        result.merge(userDefaultsResults) { _, new in new }
+        
         return result
     }
     
@@ -629,31 +697,128 @@ class WorkFlowController {
     }
 
     /// Checks for unexpected/injected files in the app bundle.
-    private static func checkUnexpectedBundleFiles(forbiddenPrefixes: [String]) -> [String: WorkFlow] {
+    private static func checkUnexpectedBundleFiles(forbiddenPrefixes: [String], allowedFiles: [String]) -> [String: WorkFlow] {
         let controller = WorkFlowController()
         var result: [String: WorkFlow] = [:]
 
         guard let contents = try? FileManager.default.contentsOfDirectory(atPath: Bundle.main.bundlePath) else {
+            // If there is no sandbox directory, then this is very abnormal and the error will be returned directly
+            let failedWork = Work(isValid: false, duration: 0, lastModifiedDiff: nil)
+            let score = controller.calculateScore(for: failedWork, expected: true, path: "bundle_directory_access_failed")
+            result["Bundle/(Failed to access bundle directory)"] = WorkFlow(work: failedWork, expectation: true, score: score)
             return result
         }
 
+        // Traverse all files within the bundle
         for item in contents {
+            var matchedForbidden = false
+            
+            // Check if on blacklist
             for prefix in forbiddenPrefixes {
                 if item.lowercased().hasPrefix(prefix.lowercased()) {
                     let work = Work(isValid: false, duration: 0, lastModifiedDiff: nil)
-                    let score = controller.calculateScore(for: work, expected: false, path: "bundle_forbidden")
-                    result["Bundle/Unexpected/\(item)"] = WorkFlow(work: work, expectation: false, score: score)
+                    let score = controller.calculateScore(for: work, expected: false, path: "bundle_forbidden/\(item)")
+                    result["Bundle/Forbidden/\(item)"] = WorkFlow(work: work, expectation: false, score: score)
+                    matchedForbidden = true
+                    break
                 }
+            }
+
+            // If the blacklist is not matched, check the whitelist
+            if !matchedForbidden && !allowedFiles.contains(item) {
+                let work = Work(isValid: false, duration: 0, lastModifiedDiff: nil)
+                let score = controller.calculateScore(for: work, expected: false, path: "bundle_unexpected/\(item)")
+                result["Bundle/Unexpected/\(item)"] = WorkFlow(work: work, expectation: false, score: score)
             }
         }
 
+        // If no abnormal files are found, add a clear "No Abnormal Files" mark.
         if result.isEmpty {
             let placeholderWork = Work(isValid: true, duration: 0, lastModifiedDiff: nil)
-            let score = controller.calculateScore(for: placeholderWork, expected: true, path: "bundle_forbidden")
-            result["Bundle/Unexpected/(no forbidden files)"] = WorkFlow(work: placeholderWork, expectation: true, score: score)
+            let score = controller.calculateScore(for: placeholderWork, expected: true, path: "bundle_clean")
+            result["Bundle/Unexpected/(no forbidden or unexpected files)"] = WorkFlow(work: placeholderWork, expectation: true, score: score)
         }
 
         return result
+    }
+    
+    
+    /// Verifies that the app version from Info.plist matches the hardcoded expected version.
+    static func checkAppVersion(expectedVersion: String = "1.0") -> WorkFlow {
+        let controller = WorkFlowController()
+        let start = Date()
+
+        let versionFromPlist = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
+        let isValid = (versionFromPlist == expectedVersion)
+
+        let duration = Date().timeIntervalSince(start)
+        let work = Work(isValid: isValid, duration: duration, lastModifiedDiff: nil)
+        let score = controller.calculateScore(for: work, expected: true, path: "version_check")
+
+#if DEBUG
+        print("[VersionCheck] Info.plist version: \(versionFromPlist ?? "nil"), expected: \(expectedVersion), match: \(isValid)")
+#endif
+
+        return WorkFlow(work: work, expectation: true, score: score)
+    }
+    
+    /// Version consistency detection
+    private static func checkSystemVersionIntegrity() -> Work {
+        let start = Date()
+
+        let versionByProcessInfo = ProcessInfo.processInfo.operatingSystemVersion
+        let versionString = UIDevice.current.systemVersion
+        let components = versionString.split(separator: ".")
+        let deviceMajor = Int(components.first ?? "0") ?? 0
+        let deviceMinor = components.count > 1 ? Int(components[1]) ?? 0 : 0
+
+        var expectedVersionRange = "Unknown"
+        var detected1 = false
+        var detected2 = false
+
+        if #available(iOS 18.0, *) {
+            expectedVersionRange = ">= 18.0"
+            detected1 = versionByProcessInfo.majorVersion == 18
+            detected2 = deviceMajor == 18
+        } else if #available(iOS 17.1, *) {
+            expectedVersionRange = "17.1 - 17.9"
+            detected1 = versionByProcessInfo.majorVersion == 17 && versionByProcessInfo.minorVersion >= 1
+            detected2 = deviceMajor == 17 && deviceMinor >= 1
+        } else if #available(iOS 17.0, *) {
+            expectedVersionRange = "17.0 - 17.0.x"
+            detected1 = versionByProcessInfo.majorVersion == 17 && versionByProcessInfo.minorVersion == 0
+            detected2 = deviceMajor == 17 && deviceMinor == 0
+        } else if #available(iOS 16.7, *) {
+            expectedVersionRange = "16.7"
+            detected1 = versionByProcessInfo.majorVersion == 16 && versionByProcessInfo.minorVersion == 7
+            detected2 = deviceMajor == 16 && deviceMinor == 7
+        } else if #available(iOS 16.6, *) {
+            expectedVersionRange = "16.6"
+            detected1 = versionByProcessInfo.majorVersion == 16 && versionByProcessInfo.minorVersion == 6
+            detected2 = deviceMajor == 16 && deviceMinor == 6
+        } else if #available(iOS 16.0, *) {
+            expectedVersionRange = "16.0 - 16.5"
+            detected1 = versionByProcessInfo.majorVersion == 16 && versionByProcessInfo.minorVersion <= 5
+            detected2 = deviceMajor == 16 && deviceMinor <= 5
+        } else if #available(iOS 15.0, *) {
+            expectedVersionRange = "15.x"
+            detected1 = versionByProcessInfo.majorVersion == 15
+            detected2 = deviceMajor == 15
+        } else if #available(iOS 14.0, *) {
+            expectedVersionRange = "14.x"
+            detected1 = versionByProcessInfo.majorVersion == 14
+            detected2 = deviceMajor == 14
+        }
+
+        let detected = detected1 && detected2
+        let processInfoVersionString = "\(versionByProcessInfo.majorVersion).\(versionByProcessInfo.minorVersion)"
+        let duration = Date().timeIntervalSince(start)
+
+#if DEBUG
+        print("[VersionIntegrityCheck] ProcessInfo: \(processInfoVersionString), UIDevice: \(versionString), Expected Range: \(expectedVersionRange), Match: \(detected)")
+#endif
+
+        return Work(isValid: detected, duration: duration, lastModifiedDiff: nil)
     }
     
     /// Checks if the process is being debugged using sysctl.
@@ -712,6 +877,15 @@ class WorkFlowController {
         let controller = WorkFlowController()
         let start = Date()
 
+        // First check if _CodeSignature exists
+        let signaturePath = Bundle.main.bundlePath + "/_CodeSignature"
+        let signatureExists = FileManager.default.fileExists(atPath: signaturePath)
+        if !signatureExists {
+            let work = Work(isValid: false, duration: 0, lastModifiedDiff: nil)
+            let score = controller.calculateScore(for: work, expected: true, path: "binary_signature")
+            return WorkFlow(work: work, expectation: true, score: score)
+        }
+
         guard let executablePath = Bundle.main.executablePath,
               let data = try? Data(contentsOf: URL(fileURLWithPath: executablePath)) else {
             let failedWork = Work(isValid: false, duration: 0, lastModifiedDiff: nil)
@@ -720,9 +894,9 @@ class WorkFlowController {
         }
 
         let hash = sha256(data: data)
-    #if DEBUG
+#if DEBUG
         print("[BinaryHash] SHA256: \(hash)")
-    #endif
+#endif
 
         let duration = Date().timeIntervalSince(start)
         let work = Work(isValid: true, duration: duration, lastModifiedDiff: nil)
@@ -735,4 +909,220 @@ class WorkFlowController {
         return digest.map { String(format: "%02x", $0) }.joined()
     }
     
+    // MARK: - Sandbox File Integrity Check
+    static func checkSandboxIntegrity(allowedFiles: [String], forbiddenPrefixes: [String]) -> [String: WorkFlow] {
+        let controller = WorkFlowController()
+        var results: [String: WorkFlow] = [:]
+        let fileManager = FileManager.default
+        let sandboxPath = NSHomeDirectory()
+        
+        let start = Date()
+        
+        guard let enumerator = fileManager.enumerator(atPath: sandboxPath) else {
+            return results
+        }
+        
+        for case let file as String in enumerator {
+            let fileURL = URL(fileURLWithPath: sandboxPath).appendingPathComponent(file)
+            let fileName = fileURL.lastPathComponent
+            
+            var matchedForbidden = false
+            let fileStart = Date()
+            
+            // Check forbidden prefixes
+            for prefix in forbiddenPrefixes {
+                if fileName.lowercased().hasPrefix(prefix.lowercased()) {
+                    let duration = Date().timeIntervalSince(fileStart)
+                    let work = Work(isValid: false, duration: duration, lastModifiedDiff: nil)
+                    let score = controller.calculateScore(for: work, expected: false, path: "sandbox_forbidden/\(file)")
+                    results["Sandbox/Forbidden/\(file)"] = WorkFlow(work: work, expectation: false, score: score)
+                    matchedForbidden = true
+                    break
+                }
+            }
+            
+            // Check if file is not explicitly allowed (unexpected)
+            if !matchedForbidden && !allowedFiles.contains(fileName) {
+                let duration = Date().timeIntervalSince(fileStart)
+                let work = Work(isValid: false, duration: duration, lastModifiedDiff: nil)
+                let score = controller.calculateScore(for: work, expected: false, path: "sandbox_unexpected/\(file)")
+                results["Sandbox/Unexpected/\(file)"] = WorkFlow(work: work, expectation: false, score: score)
+            }
+        }
+        
+        // If no suspicious files found
+        if results.isEmpty {
+            let duration = Date().timeIntervalSince(start)
+            let placeholderWork = Work(isValid: true, duration: duration, lastModifiedDiff: nil)
+            let score = controller.calculateScore(for: placeholderWork, expected: true, path: "sandbox_clean")
+            results["Sandbox/(no suspicious files)"] = WorkFlow(work: placeholderWork, expectation: true, score: score)
+        }
+        
+        return results
+    }
+
+    // MARK: - UserDefaults Value Integrity Check
+    static func checkUserDefaultsIntegrity(allowedKeys: [String], forbiddenKeys: [String]) -> [String: WorkFlow] {
+        let controller = WorkFlowController()
+        var results: [String: WorkFlow] = [:]
+        let defaults = UserDefaults.standard
+        
+        let start = Date()
+        
+        let defaultsDict = defaults.dictionaryRepresentation()
+        
+        for (key, _) in defaultsDict {
+            let keyStart = Date()
+            var matchedForbidden = false
+            
+            // Check forbidden keys
+            for forbiddenKey in forbiddenKeys {
+                if key.lowercased().hasPrefix(forbiddenKey.lowercased()) {
+                    let duration = Date().timeIntervalSince(keyStart)
+                    let work = Work(isValid: false, duration: duration, lastModifiedDiff: nil)
+                    let score = controller.calculateScore(for: work, expected: false, path: "defaults_forbidden/\(key)")
+                    results["UserDefaults/Forbidden/\(key)"] = WorkFlow(work: work, expectation: false, score: score)
+                    matchedForbidden = true
+                    break
+                }
+            }
+            
+            // Check unexpected keys
+            if !matchedForbidden && !allowedKeys.contains(key) {
+                let duration = Date().timeIntervalSince(keyStart)
+                let work = Work(isValid: false, duration: duration, lastModifiedDiff: nil)
+                let score = controller.calculateScore(for: work, expected: false, path: "defaults_unexpected/\(key)")
+                results["UserDefaults/Unexpected/\(key)"] = WorkFlow(work: work, expectation: false, score: score)
+            }
+        }
+        
+        // If no suspicious UserDefaults found
+        if results.isEmpty {
+            let duration = Date().timeIntervalSince(start)
+            let placeholderWork = Work(isValid: true, duration: duration, lastModifiedDiff: nil)
+            let score = controller.calculateScore(for: placeholderWork, expected: true, path: "defaults_clean")
+            results["UserDefaults/(no suspicious values)"] = WorkFlow(work: placeholderWork, expectation: true, score: score)
+        }
+        
+        return results
+    }
+    
+#if DEBUG
+    ///
+    /// Performs SpringBoard launch access verification using fixed black/white lists.
+    static func checkSpringBoardLaunchAccess() -> [String: WorkFlow] {
+        let controller = WorkFlowController()
+        var results = [String: WorkFlow]()
+        
+        let forbiddenBundleIDs = [
+            "com.opa334.TrollStore",
+            "com.opa334.Dopamine",
+            "org.coolstar.SileoStore",
+            "xyz.willy.Zebra",
+            "com.saurik.Cydia",
+            "com.tigisoftware.Filza",
+            "com.serena.santanderfm",
+            "com.tigisoftware.ADManager",
+            "wiki.qaq.TrollFools",
+            "com.huami.TrollFools",
+            "wiki.qaq.trapp",
+            "com.amywhile.Aemulo",
+            "cn.bswbw.AppsDump",
+            "cn.gblw.AppsDump",
+            "com.zlwl.appsdump",
+            "ru.domo.cocoatop64",
+            "wiki.qaq.ai.gate",
+            "com.gamegod.igg",
+            "com.callassist.batteryinfolist",
+            "com.niceios.Battery.Battery",
+            "com.xiaobovlog.ipcc",
+            "com.xiaobovlog.FastReboot",
+            "com.rbtdigital.BatteryLife",
+            "me.tomt000.copylog",
+            "com.leemin.Cowabunga",
+            "com.leemin.SecondHand",
+            "com.netskao.downgradeapp",
+            "app.legizmo",
+            "xc.lzsxcl.Trollo2e",
+            "chaoge.ChargeLimiter",
+            "ch.xxtou.hudapp",
+            "com.leemin.helium",
+            "com.leemin.helium",
+            "com.mumu.iosshare",
+            "com.cisc0freak.cardio",
+            "ca.bomberfish.CAPerfHudSwift",
+            "com.lenglengyu.supervip"
+        ]
+        
+        let allowedBundleIDs = [
+            "com.apple.Preferences",
+            "com.apple.MobileSMS",
+            "com.apple.mobilephone"
+        ]
+        
+        let globalStart = Date()
+
+        for bundleID in forbiddenBundleIDs {
+            let start = Date()
+            let status = launchBundleID(bundleID)
+            let duration = Date().timeIntervalSince(start)
+            let detected = (status == 9)
+            let work = Work(isValid: !detected, duration: duration, lastModifiedDiff: nil)
+            let score = controller.calculateScore(for: work, expected: false, path: "BundleIDCheck/Forbidden/\(bundleID)")
+            results["BundleIDCheck/Forbidden/\(bundleID)"] = WorkFlow(work: work, expectation: false, score: score)
+        }
+
+        for bundleID in allowedBundleIDs {
+            let start = Date()
+            let status = launchBundleID(bundleID)
+            let duration = Date().timeIntervalSince(start)
+            let detected = (status == 9)
+            let work = Work(isValid: detected, duration: duration, lastModifiedDiff: nil)
+            let score = controller.calculateScore(for: work, expected: true, path: "BundleIDCheck/Allowed/\(bundleID)")
+            results["BundleIDCheck/Allowed/\(bundleID)"] = WorkFlow(work: work, expectation: true, score: score)
+        }
+
+        // Hook check
+        let hookStart = Date()
+        let isHooked = isSBSLaunchFunctionHooked()
+        let hookDuration = Date().timeIntervalSince(hookStart)
+        let hookWork = Work(isValid: !isHooked, duration: hookDuration, lastModifiedDiff: nil)
+        let hookScore = controller.calculateScore(for: hookWork, expected: true, path: "BundleIDCheck/HookDetection")
+        results["BundleIDCheck/HookDetection"] = WorkFlow(work: hookWork, expectation: false, score: hookScore)
+
+        // Meta total duration
+        let totalDuration = Date().timeIntervalSince(globalStart)
+        let metaWork = Work(isValid: true, duration: totalDuration, lastModifiedDiff: nil)
+        let metaScore = controller.calculateScore(for: metaWork, expected: true, path: "BundleIDCheck/TotalDuration")
+        results["BundleIDCheck/TotalDuration"] = WorkFlow(work: metaWork, expectation: true, score: metaScore)
+
+        return results
+    }
+
+    private static func launchBundleID(_ bundleIdentifier: String) -> Int32 {
+        guard let handle = dlopen("/System/Library/PrivateFrameworks/SpringBoardServices.framework/SpringBoardServices", RTLD_NOW) else {
+            return -1
+        }
+        defer { dlclose(handle) }
+
+        typealias SBSFunc = @convention(c) (NSString, NSURL?, NSDictionary?, NSDictionary?, Bool) -> Int32
+        guard let sym = dlsym(handle, "SBSLaunchApplicationWithIdentifierAndURLAndLaunchOptions") else {
+            return -2
+        }
+
+        let function = unsafeBitCast(sym, to: SBSFunc.self)
+        return function(bundleIdentifier as NSString, nil, nil, nil, false)
+    }
+
+    private static func isSBSLaunchFunctionHooked() -> Bool {
+        guard let handle = dlopen("/System/Library/PrivateFrameworks/SpringBoardServices.framework/SpringBoardServices", RTLD_NOW),
+              let sym = dlsym(handle, "SBSLaunchApplicationWithIdentifierAndURLAndLaunchOptions") else {
+            return true
+        }
+        defer { dlclose(handle) }
+
+        let ptr = UnsafeRawPointer(sym).assumingMemoryBound(to: UInt8.self)
+        return ptr.pointee == 0xFF && ptr.advanced(by: 1).pointee == 0x25
+    }
+#endif
 }

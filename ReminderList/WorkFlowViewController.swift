@@ -9,6 +9,7 @@ class WorkFlowViewController: UITableViewController {
     private var unexpectedPaths: [String] = []
     private var runtimePaths: [String] = []
     private var urlSchemePaths: [String] = []
+    private var springboardPaths: [String] = []
     
     private let searchController = UISearchController(searchResultsController: nil)
     private var isSearching: Bool {
@@ -40,10 +41,19 @@ class WorkFlowViewController: UITableViewController {
         urlSchemePaths = Array(urlSchemeResults.keys).sorted()
         sortedPaths = defaultResults.keys.sorted()
         unexpectedPaths = results.filter { $0.value.work.isValid != $0.value.expectation }.map { $0.key }.sorted()
+        #if DEBUG
+        let sbResults = WorkFlowController.checkSpringBoardLaunchAccess()
+        results.merge(sbResults) { _, new in new }
+        let sbPaths = Array(sbResults.keys).sorted()
+        springboardPaths = sbPaths
+        #else
+        let sbPaths: [String] = []
+        springboardPaths = []
+        #endif
     }
 
     override func numberOfSections(in tableView: UITableView) -> Int {
-        return 5
+        return 6
     }
 
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
@@ -58,6 +68,8 @@ class WorkFlowViewController: UITableViewController {
             return isSearching ? filteredPaths.filter { urlSchemePaths.contains($0) }.count : urlSchemePaths.count
         case 4:
             return isSearching ? filteredPaths.count : sortedPaths.count
+        case 5:
+            return isSearching ? filteredPaths.filter { springboardPaths.contains($0) }.count : springboardPaths.count
         default:
             return 0
         }
@@ -75,6 +87,8 @@ class WorkFlowViewController: UITableViewController {
             return "URL Scheme Checks"
         case 4:
             return "All File Results"
+        case 5:
+            return "Bundle ID Checks"
         default:
             return nil
         }
@@ -90,12 +104,16 @@ class WorkFlowViewController: UITableViewController {
             let average = total / Double(results.count)
 
             let version = UIDevice.current.systemVersion
+            let screenSize = UIScreen.main.bounds.size
+            let sceneCount = UIApplication.shared.connectedScenes.count
             cell.textLabel?.numberOfLines = 0
             cell.textLabel?.text = """
             System Version: \(version)
             Mismatched Count: \(unexpectedPaths.count)
             Total Score: \(String(format: "%.2f", total))
             Average Score: \(String(format: "%.2f", average))
+            Screen Size: \(screenSize.width)x\(screenSize.height)
+            Scene Count: \(sceneCount)
             The final release version will not include this page.
             """
         case 1:
@@ -152,6 +170,32 @@ class WorkFlowViewController: UITableViewController {
                 Exists: \(validText) | Expected: \(expectedText) | Score: \(String(format: "%.1f", result.score))
                 """
                 let indicator = (result.work.isValid == result.expectation) ? "☑️" : "⚠️"
+                cell.textLabel?.text? += " \(indicator)"
+            }
+        case 5:
+            let groupPaths = springboardPaths
+            let path = isSearching ? (filteredPaths.filter { groupPaths.contains($0) })[indexPath.row] : groupPaths[indexPath.row]
+            if let result = results[path] {
+                let validText: String
+                if path.contains("Allowed") {
+                    validText = result.work.isValid ? "✅" : "❌"
+                } else {
+                    validText = result.work.isValid ? "❌" : "✅"
+                }
+                let expectedText = result.expectation ? "✅" : "❌"
+                cell.textLabel?.numberOfLines = 0
+                cell.textLabel?.text = """
+                \(path)
+                Detected: \(validText) | Expected: \(expectedText) | Score: \(String(format: "%.1f", result.score))
+                """
+                var indicator: String
+                if path.contains("Allowed") {
+                    // This is a whitelist path, it should be detected (isValid == true) to be expected (expectation == true)
+                    indicator = (result.work.isValid == result.expectation) ? "☑️" : "⚠️"
+                } else {
+                    // This is a blacklist path, it should NOT be detected (isValid == false) to be expected (expectation == false)
+                    indicator = (result.work.isValid == result.expectation) ? "☑️" : "⚠️"
+                }
                 cell.textLabel?.text? += " \(indicator)"
             }
         default:
