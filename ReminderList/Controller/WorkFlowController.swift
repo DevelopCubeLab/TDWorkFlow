@@ -700,7 +700,7 @@ class WorkFlowController {
     /// Returns a mapping of suspicious dylib paths to their corresponding WorkFlow.
     private static func suspiciousDylibWorkflows(controller: WorkFlowController) -> [String: WorkFlow] {
         let suspectKeywords = ["cydia", "substrate", "tweak", "injection", "TweakInject", "Choicy", "Crane", "leftPan", "Flex", "iapstore"]
-        
+
         var result: [String: WorkFlow] = [:]
         let count = _dyld_image_count()
 #if DEBUG
@@ -712,9 +712,13 @@ class WorkFlowController {
                 print("\(i) dylib name: \(String(cString: name))")
 #endif
                 let path = String(cString: name)
+                // Skip system libraries to avoid false positives
+                let safePrefixes = ["/System/Library/", "/usr/lib/", "/usr/lib/system/", "/System/iOSSupport/System/Library/"]
+                if safePrefixes.contains(where: { path.hasPrefix($0) }) {
+                    continue
+                }
                 for keyword in suspectKeywords {
                     if path.lowercased().contains(keyword) {
-
                         storeDetectionSecurely(flowComment: "Detected suspicious dylib: \(path)")
 #if !FOR_CHECK_WORK_FLOW
                         fatalError("Terminating due to suspicious dylib injection.")
@@ -727,7 +731,7 @@ class WorkFlowController {
                 }
             }
         }
-        
+
         if result.isEmpty {
             let placeholderWork = Work(isValid: true, duration: 0, lastModifiedDiff: nil)
             let score = controller.calculateScore(for: placeholderWork, expected: true, path: "dylibs")
