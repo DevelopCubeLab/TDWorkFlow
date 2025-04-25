@@ -137,6 +137,12 @@
             "state" : "translated",
             "value" : "High-risk environment detected. The app will now exit for your safety."
           }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "您当前设备环境异常，App即将退出"
+          }
         }
       }
     },

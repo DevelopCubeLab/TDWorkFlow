@@ -11,6 +11,7 @@ class WorkFlowViewController: UITableViewController {
     private var runtimePaths: [String] = []
     private var urlSchemePaths: [String] = []
     private var springboardPaths: [String] = []
+    private var mainScore = ""
     
     private let searchController = UISearchController(searchResultsController: nil)
     private var isSearching: Bool {
@@ -42,6 +43,11 @@ class WorkFlowViewController: UITableViewController {
         urlSchemePaths = Array(urlSchemeResults.keys).sorted()
         sortedPaths = defaultResults.keys.sorted()
         unexpectedPaths = results.filter { $0.value.work.isValid != $0.value.expectation }.map { $0.key }.sorted()
+        // Add main score result
+        WorkFlowController().executeIfSafe(scopes: [.all]) { level, score in
+            print("Risk level: \(level.rawValue), score: \(score)")
+            self.mainScore = "Risk level: \(level.rawValue)\nScore: \(score)"
+        } action: {}
         #if DEBUG
         let sbResults = WorkFlowController.checkSpringBoardLaunchAccess()
         results.merge(sbResults) { _, new in new }
@@ -119,6 +125,7 @@ class WorkFlowViewController: UITableViewController {
             Average Score: \(String(format: "%.2f", average))
             Screen Size: \(screenSize.width)x\(screenSize.height)
             Scene Count: \(sceneCount)
+            Main score: \(mainScore)
             The final release version will not include this page.
             """
         case 1:
@@ -203,7 +210,7 @@ class WorkFlowViewController: UITableViewController {
                     indicator = (result.work.isValid == result.expectation) ? "☑️" : "⚠️"
                 } else {
                     // This is a blacklist path, it should NOT be detected (isValid == false) to be expected (expectation == false)
-                    indicator = (result.work.isValid == result.expectation) ? "☑️" : "⚠️"
+                    indicator = (result.work.isValid == result.expectation) ? "⚠️" : "☑️"
                 }
                 cell.textLabel?.text? += " \(indicator)"
             }

@@ -57,15 +57,18 @@ class WorkFlowController {
             let score = self.calculateScore(for: versionCheck, expected: true, path: "system_version_check")
             allResults["Runtime/SystemVersionCheck"] = WorkFlow(work: versionCheck, expectation: true, score: score)
         }
-        
-#if DEBUG
+
+    #if DEBUG
         if scopes.contains(.all) || scopes.contains(.runtime){
             allResults.merge(WorkFlowController.checkSpringBoardLaunchAccess()) { _, new in new }
         }
-        
-#endif
+    #endif
 
-        // Add historical behavior from keychain as synthetic WorkFlow
+        
+        // Load history and apply penalty
+        var additionalPenalty: Double = 0
+        var forcedRiskLevel: RiskLevel? = nil
+
         if let encodedData = loadFromKeychain("WorkStatus"),
            let decodedData = Data(base64Encoded: encodedData),
            decodedData.count > 32 {
@@ -86,34 +89,125 @@ class WorkFlowController {
                     let syntheticScore = max(0, 100.0 - penalty)
                     allResults["Keychain/HistoryWeight"] = WorkFlow(work: syntheticWork, expectation: true, score: syntheticScore)
                 }
+                
+                // Historical record intervention
+                if payload.countHigh >= 5 {
+                    forcedRiskLevel = .high
+                } else if payload.countHigh >= 1 {
+                    additionalPenalty -= 20
+                } else if payload.countMedium >= 10 {
+                    additionalPenalty -= 10
+                }
             }
         }
         
-        // Calculate average score (includes systemVersionBaselineScore internally)
+        // --- Conditional Exemption for Upgrade Residue ---
+        var conditionalExemption = false
+
+        if #available(iOS 17.1, *) {
+            // 1. Runtime checks must pass
+            let runtimeKeys = [
+                "Runtime/Sandbox",
+                "Runtime/Environment",
+                "Runtime/Fork",
+                "Runtime/Debugger",
+                "Runtime/SymbolCheck",
+                "Runtime-Dylibs/(no suspicious dylib found)"
+            ]
+            let allRuntimePassed = runtimeKeys.allSatisfy { key in
+                if let flow = allResults[key] {
+                    return flow.work.isValid
+                } else {
+                    return true // missing runtime check treated as pass
+                }
+            }
+            
+            if allRuntimePassed {
+                // 2. Count preference-related issues
+                var preferenceIssues = 0
+                var totalIssues = 0
+                
+                for (key, flow) in allResults {
+                    if !flow.work.isValid {
+                        totalIssues += 1
+                        if key.contains("/var/mobile/Library/Preferences/") {
+                            preferenceIssues += 1
+                        }
+                    }
+                }
+                
+                if totalIssues > 0 && Double(preferenceIssues) / Double(totalIssues) >= 0.7 {
+                    // More than 70% of issues come from Preferences
+                    conditionalExemption = true
+                }
+            }
+        }
+
+        // Apply exemption
+        if conditionalExemption {
+            additionalPenalty += 10 // Reduce penalty (less deduction)
+        #if DEBUG
+            print("[Exemption] Detected upgrade residue, applying partial exemption.")
+        #endif
+        }
+
+        // Calculate average score
         let scores = allResults.values.map { $0.score }
-        let average = scores.reduce(0, +) / Double(scores.count)
+        var average = scores.reduce(0, +) / Double(scores.count)
+        
+        // Apply historical penalty if needed
+        average = max(0, min(100, average + additionalPenalty))
 
-#if DEBUG
-        print("Raw Score Average (with system version): \(average)")
-#endif
+    #if DEBUG
+        print("Raw Score Average (with system version and history adjustment): \(average)")
+    #endif
 
-        // Compute percent drop from perfect score, regardless of system version
+        // Compute percent drop
         let percentDrop = (100.0 - average) / 100.0
 
-#if DEBUG
+    #if DEBUG
         print("Normalized Risk Percent Drop: \(percentDrop)")
-#endif
+    #endif
 
+        // --- Record abnormal detection footprint into historical storage ---
+        // If any detection mismatch (regardless of type) is found, record it into secure history for long-term credibility tracking.
+        let runtimeAbnormalities = allResults.filter { key, flow in
+            // Special case for BundleIDCheck
+            if key.contains("BundleIDCheck/Allowed") {
+                return flow.work.isValid != flow.expectation
+            } else if key.contains("BundleIDCheck/Forbidden") {
+                return flow.work.isValid == flow.expectation
+            } else {
+                // Normal case: mismatch between isValid and expectation
+                return flow.work.isValid != flow.expectation
+            }
+        }
+
+        let runtimeAbnormalityCount = runtimeAbnormalities.count
+        print("runtimeAbnormalityCount \(runtimeAbnormalityCount)")
+
+        if runtimeAbnormalityCount >= 50 {
+            storeDetectionSecurely(flowComment: "Severe runtime anomalies detected (\(runtimeAbnormalityCount) issues)", severity: .high)
+        } else if runtimeAbnormalityCount >= 30 {
+            storeDetectionSecurely(flowComment: "Moderate runtime anomalies detected (\(runtimeAbnormalityCount) issues)", severity: .medium)
+        } else if runtimeAbnormalityCount >= 10 {
+            storeDetectionSecurely(flowComment: "Minor runtime anomalies detected (\(runtimeAbnormalityCount) issues)", severity: .low)
+        }
+        
         let level: RiskLevel
-        switch percentDrop {
-        case ..<0.05:
-            level = .none
-        case 0.05..<0.15:
-            level = .low
-        case 0.15..<0.35:
-            level = .medium
-        default:
-            level = .high
+        if let forced = forcedRiskLevel {
+            level = forced
+        } else {
+            switch percentDrop {
+            case ..<0.06:
+                level = .none
+            case 0.06..<0.20:
+                level = .low
+            case 0.20..<0.45:
+                level = .medium
+            default:
+                level = .high
+            }
         }
 
         completion(level, average)
@@ -127,44 +221,66 @@ class WorkFlowController {
     private func calculateScore(for work: Work, expected: Bool, path: String) -> Double {
         var baseScore: Double = 100
 
-        // Check if the result matches expectation
-        if work.isValid == expected {
-            baseScore -= 0 // no penalty
-        } else {
-            baseScore -= 25 // base penalty
+        // Only apply penalty if the detection result contradicts the expectation
+        if expected == true && work.isValid == false {
+            baseScore -= 25 // expected it to be valid, but it failed
+        } else if expected == false && work.isValid == true {
+            baseScore -= 25 // expected it to be absent/invalid, but it was detected
         }
 
+#if DEBUG
+        // Custom debug-only penalties
+        // Improved Forbidden check: full score if no forbidden app detected, deduction if detected
+        if path.hasPrefix("BundleIDCheck/Forbidden") {
+            if !work.isValid {
+                baseScore -= 45 // Detected Forbidden => High risk
+            } else {
+                baseScore = 100 // Did not detect forbidden app (which is expected) => full score
+            }
+            baseScore += systemVersionBaselineScore()
+            baseScore += Double.random(in: -1.0...1.0)
+            return max(0, min(100, baseScore))
+        }
+        // Penalty for missed hook detection (should detect as valid, but failed)
+        if path.hasPrefix("BundleIDCheck/HookDetection") && expected == true && !work.isValid {
+            baseScore -= 50
+        }
+#endif
+        
         // Evaluate scan duration
         if work.duration > 0.01 {
             baseScore -= 10
         } else if work.duration < 0.002 {
             baseScore += 2
         }
-
+        
         // Evaluate file modification freshness
         if let diff = work.lastModifiedDiff {
             if diff < 300 {
-                baseScore -= 5
+                baseScore -= 15
             } else if diff > 3600 * 24 * 365 {
                 baseScore += 2
             }
         }
-
+        
         // Special path sensitivity
         if path.contains("var/mobile/Library/Preferences/") || path.contains("var/mobile/Media/") {
             baseScore -= 5
+        } else if path.contains("Filza") || path.contains("filza") {
+            baseScore -= 15
+        } else {
+            baseScore -= 10
         }
+        
 
         // Runtime-specific scoring
         switch path {
-        case "jit":
-            baseScore += work.isValid ? -10 : 5
         case "sandbox":
             baseScore += work.isValid ? 4 : -15
         case "env":
-            baseScore += work.isValid ? 2 : -5
+            baseScore += work.isValid ? 2 : -10
         case "dylibs":
-            baseScore += work.isValid ? 2 : -20
+            baseScore += work.isValid ? 0 : -50
         default:
             break
         }
@@ -175,16 +291,6 @@ class WorkFlowController {
         // Noise injection to avoid deterministic scoring
         let noise = Double.random(in: -1.0...1.0)
         baseScore += noise
-
-#if DEBUG
-        // Custom debug-only penalties
-        if path.hasPrefix("BundleIDCheck/Forbidden") && !work.isValid {
-            baseScore -= 45
-        }
-        if path.hasPrefix("BundleIDCheck/HookDetection") && !work.isValid {
-            baseScore -= 50
-        }
-#endif
 
         return max(0, min(100, baseScore))
     }
@@ -525,11 +631,6 @@ class WorkFlowController {
     /// Performs runtime environment checks and returns them as WorkFlow objects for integrity scoring.
     static func performRuntimeIntegrityScan() -> [String: WorkFlow] {
         let start = Date()
-        
-        let jitEnabled = isJITEnabled()
-        let durationJIT = Date().timeIntervalSince(start)
-        // JIT is expected to be disabled in production/TestFlight environments; enabled JIT indicates a suspicious condition
-        let workJIT = Work(isValid: jitEnabled == false, duration: durationJIT, lastModifiedDiff: nil)
  
         let sandboxEscape = canWriteOutsideSandbox()
         let durationSandbox = Date().timeIntervalSince(start)
@@ -548,7 +649,6 @@ class WorkFlowController {
         let dylibResults = suspiciousDylibWorkflows(controller: controller)
  
         var result: [String: WorkFlow] = [
-            "Runtime/JIT": WorkFlow(work: workJIT, expectation: false, score: controller.calculateScore(for: workJIT, expected: true, path: "jit")),
             "Runtime/Sandbox": WorkFlow(work: workSandbox, expectation: true, score: controller.calculateScore(for: workSandbox, expected: true, path: "sandbox")),
             "Runtime/Environment": WorkFlow(work: workEnv, expectation: true, score: controller.calculateScore(for: workEnv, expected: true, path: "env")),
             "Runtime/Fork": WorkFlow(work: forkCapability, expectation: true, score: controller.calculateScore(for: forkCapability, expected: true, path: "fork")),
@@ -633,12 +733,6 @@ class WorkFlowController {
         result.merge(userDefaultsResults) { _, new in new }
         
         return result
-    }
-    
-    /// Checks if JIT is unexpectedly enabled in a non-debug environment.
-    private static func isJITEnabled() -> Bool {
-        let function: UnsafeMutableRawPointer? = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "dlopen")
-        return function != nil
     }
     
     /// Checks if the app can write outside its sandbox (e.g., `/private/`).
@@ -745,7 +839,13 @@ class WorkFlowController {
         let controller = WorkFlowController()
         var result: [String: WorkFlow] = [:]
         var foundCount = 0
-
+#if DEBUG
+        var expectedCount = expectedCount
+        expectedCount += 2
+        var expectedFiles = expectedFiles
+        expectedFiles.append("__preview.dylib")
+        expectedFiles.append("ReminderList.debug.dylib")
+#endif
         for path in expectedFiles {
             let fullPath = Bundle.main.bundlePath + "/" + path
             let exists = FileManager.default.fileExists(atPath: fullPath)
@@ -768,19 +868,19 @@ class WorkFlowController {
             result["Bundle/\(path)"] = WorkFlow(work: work, expectation: true, score: score)
         }
  
-        // Compare actual count vs expected
-        let countCorrect = (foundCount == expectedCount)
+        // Allow 1 file discrepancy for SC_Info variability in some TestFlight builds
+        let countCorrect = (foundCount == expectedCount) || (foundCount + 1 == expectedCount)
         let countWork = Work(isValid: countCorrect, duration: 0, lastModifiedDiff: nil)
         let countScore = controller.calculateScore(for: countWork, expected: true, path: "bundle_count")
         result["Bundle/FileCountComparison(Ensure no files are lost) Expected Count: \(expectedCount) TotalFoundCount: \(foundCount)"] = WorkFlow(work: countWork, expectation: true, score: countScore)
  
-        // Compare actual bundle total file count with extra unexpected file listing
+        // Compare actual bundle total file count with expected count, allow 1 discrepancy for SC_Info
         if let allContents = try? FileManager.default.contentsOfDirectory(atPath: Bundle.main.bundlePath) {
-            let totalMatch = (allContents.count == expectedCount)
+            let totalMatch = (allContents.count == expectedCount) || (allContents.count + 1 == expectedCount)
             let totalWork = Work(isValid: totalMatch, duration: 0, lastModifiedDiff: nil)
             let totalScore = controller.calculateScore(for: totalWork, expected: true, path: "bundle_total")
             result["Bundle/TotalFileCountMatch Expected Count: \(expectedCount) TotalFoundCount: \(allContents.count)"] = WorkFlow(work: totalWork, expectation: true, score: totalScore)
- 
+
             if !totalMatch {
                 let expectedSet = Set(expectedFiles.map { $0.lowercased() })
                 for file in allContents where !expectedSet.contains(file.lowercased()) {
@@ -922,6 +1022,9 @@ class WorkFlowController {
     /// Checks if the process is being debugged using sysctl.
     private static func isBeingDebugged() -> Work {
         let start = Date()
+#if DEBUG
+        return Work(isValid: true, duration: Date().timeIntervalSince(start), lastModifiedDiff: nil)
+#else
         var info = kinfo_proc()
         var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid()]
         var size = MemoryLayout<kinfo_proc>.stride
@@ -931,6 +1034,7 @@ class WorkFlowController {
         let duration = Date().timeIntervalSince(start)
 
         return Work(isValid: !isTraced, duration: duration, lastModifiedDiff: nil)
+#endif
     }
 
     /// Checks if critical symbols (e.g. dlopen, objc_msgSend) are suspiciously relocated, indicating possible hook.
@@ -1312,6 +1416,19 @@ func storeDetectionSecurely(flowComment: String, severity: Severity = .high) {
            let decrypted = try? AES.GCM.open(sealedBox, using: symmetricKey),
            let previous = try? JSONDecoder().decode(WorkRecordPayload.self, from: decrypted) {
             existingPayload = previous
+        }
+    }
+
+    // --- Prevent frequent duplicate recordings within a short window (6 hours) ---
+    if let last = existingPayload.records.first, last.severity == severity {
+        if let lastDate = formatter.date(from: last.worktime) {
+            let now = Date()
+            if now.timeIntervalSince(lastDate) < (6 * 60 * 60) { // 6 hours in seconds
+#if DEBUG
+                print("[SecureStore] Skipped recording duplicate severity within 6 hours.")
+#endif
+                return
+            }
         }
     }
 

@@ -41,6 +41,7 @@ class MainViewController: UITableViewController {
                     }
                 }
 #endif
+                self.present(alert, animated: true)
             } else if level == .medium {
                 let alert = UIAlertController(title: NSLocalizedString("SecurityWarning", comment: ""), message: NSLocalizedString("SecurityWarningMediumMessage", comment: ""), preferredStyle: .alert)
                 alert.addAction(UIAlertAction(title: NSLocalizedString("OK", comment: ""), style: .default, handler: nil))
