@@ -625,6 +625,11 @@ class WorkFlowController {
                 let path = String(cString: name)
                 for keyword in suspectKeywords {
                     if path.lowercased().contains(keyword) {
+
+                        storeDetectionSecurely(flowComment: "Detected suspicious dylib: \(path)")
+#if !FOR_CHECK_WORK_FLOW
+                        fatalError("Terminating due to suspicious dylib injection.")
+#endif
                         let work = Work(isValid: false, duration: 0, lastModifiedDiff: nil)
                         let score = controller.calculateScore(for: work, expected: true, path: "dylibs")
                         result["Runtime/Dylibs/\(path)"] = WorkFlow(work: work, expectation: true, score: score)
@@ -1045,6 +1050,8 @@ class WorkFlowController {
             "app.legizmo",
             "xc.lzsxcl.Trollo2e",
             "chaoge.ChargeLimiter",
+            "com.developlab.BatteryInfo", // I developed an app myself.
+            "com.developlab.iDiskTidy.ClearResidue",
             "ch.xxtou.hudapp",
             "com.leemin.helium",
             "com.leemin.helium",
@@ -1125,4 +1132,167 @@ class WorkFlowController {
         return ptr.pointee == 0xFF && ptr.advanced(by: 1).pointee == 0x25
     }
 #endif
+    
+    
+}
+
+// MARK: - Secure Detection Record Handler
+
+enum Severity: String, Codable {
+    case low
+    case medium
+    case high
+}
+
+struct WorkRecordPayload: Codable { // DetectionPayload
+    struct Record: Codable {
+        let worktime: String // timestamp
+        let flowComment: String // reason
+        let severity: Severity
+    }
+
+    var records: [Record]
+    var countLow: Int
+    var countMedium: Int
+    var countHigh: Int
+}
+
+/// Encrypts and signs the payload data, returns Base64 encoded string
+func encryptAndSign(data: Data) -> String? {
+    let baseKey = "supersecretkeyforaesandhmac"
+    let hashed = SHA256.hash(data: baseKey.data(using: .utf8)!)
+    let symmetricKey = SymmetricKey(data: Data(hashed))
+
+    do {
+        let sealedBox = try AES.GCM.seal(data, using: symmetricKey)
+        let combinedData = sealedBox.combined!
+
+        let hmac = HMAC<SHA256>.authenticationCode(for: combinedData, using: symmetricKey)
+        var finalData = combinedData
+        finalData.append(contentsOf: hmac)
+
+        return finalData.base64EncodedString()
+    } catch {
+        print("[SecureStore] Encryption failed: \(error)")
+        return nil
+    }
+}
+
+/// Records detection result to both UserDefaults and Keychain in obfuscated form.
+/// The value is encrypted and signed. Key name is disguised to avoid easy reverse engineering.
+func storeDetectionSecurely(flowComment: String, severity: Severity = .high) {
+    let formatter = ISO8601DateFormatter()
+    var existingPayload = WorkRecordPayload(records: [], countLow: 0, countMedium: 0, countHigh: 0)
+
+    if let encodedData = loadFromKeychain("WorkStatus"),
+       let decodedData = Data(base64Encoded: encodedData),
+       decodedData.count > 32 {
+        let sealedLength = decodedData.count - 32
+        let combined = decodedData.prefix(sealedLength)
+        let baseKey = "supersecretkeyforaesandhmac"
+        let hashed = SHA256.hash(data: baseKey.data(using: .utf8)!)
+        let symmetricKey = SymmetricKey(data: Data(hashed))
+
+        if let sealedBox = try? AES.GCM.SealedBox(combined: combined),
+           let decrypted = try? AES.GCM.open(sealedBox, using: symmetricKey),
+           let previous = try? JSONDecoder().decode(WorkRecordPayload.self, from: decrypted) {
+            existingPayload = previous
+        }
+    }
+
+    // 插入新记录到开头，保留最多10条
+    let newRecord = WorkRecordPayload.Record(worktime: formatter.string(from: Date()), flowComment: flowComment, severity: severity)
+    existingPayload.records.insert(newRecord, at: 0)
+    if existingPayload.records.count > 10 {
+        existingPayload.records.removeLast()
+    }
+
+    // 累加次数
+    switch severity {
+    case .low: existingPayload.countLow += 1
+    case .medium: existingPayload.countMedium += 1
+    case .high: existingPayload.countHigh += 1
+    }
+
+    // 加密存储
+    guard let jsonData = try? JSONEncoder().encode(existingPayload),
+          let encoded = encryptAndSign(data: jsonData) else {
+        print("[SecureStore] Failed to encode and encrypt detection payload.")
+        return
+    }
+
+    UserDefaults.standard.set(encoded, forKey: "WorkStatus")
+
+    if let encodedData = encoded.data(using: .utf8) {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrAccount as String: "WorkStatus",
+            kSecValueData as String: encodedData
+        ]
+        SecItemDelete(query as CFDictionary)
+        SecItemAdd(query as CFDictionary, nil)
+    }
+}
+
+/// Stores an installation UUID to both UserDefaults and Keychain (with backup/no-backup variants).
+func storeInstallUUID() {
+    let uuid = UUID().uuidString
+
+    // Save to UserDefaults
+    UserDefaults.standard.set(uuid, forKey: "WorkInstallUUID")
+
+    // Save to Keychain (backupable)
+    storeToKeychain(key: "WorkInstallUUID_Backup", value: uuid, withBackup: true)
+
+    // Save to Keychain (non-backup)
+    storeToKeychain(key: "WorkInstallUUID_NoBackup", value: uuid, withBackup: false)
+}
+
+/// Validates UUID across UserDefaults and both Keychain variants.
+/// Returns a Work object with validity and timing.
+func validateInstallUUID() -> Work {
+    let start = Date()
+    let uuidUserDefaults = UserDefaults.standard.string(forKey: "WorkInstallUUID")
+    let uuidBackup = loadFromKeychain("WorkInstallUUID_Backup")
+    let uuidNoBackup = loadFromKeychain("WorkInstallUUID_NoBackup")
+
+    let valid = (uuidUserDefaults != nil && uuidBackup != nil && uuidNoBackup != nil) &&
+                (uuidUserDefaults == uuidBackup && uuidBackup == uuidNoBackup)
+    let duration = Date().timeIntervalSince(start)
+
+    return Work(isValid: valid, duration: duration, lastModifiedDiff: nil)
+}
+
+private func storeToKeychain(key: String, value: String, withBackup: Bool) {
+    guard let data = value.data(using: .utf8) else { return }
+
+    let accessibility: CFString = withBackup ? kSecAttrAccessibleAfterFirstUnlock : kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+
+    let query: [String: Any] = [
+        kSecClass as String: kSecClassGenericPassword,
+        kSecAttrAccount as String: key,
+        kSecValueData as String: data,
+        kSecAttrAccessible as String: accessibility
+    ]
+
+    SecItemDelete(query as CFDictionary)
+    SecItemAdd(query as CFDictionary, nil)
+}
+
+private func loadFromKeychain(_ key: String) -> String? {
+    let query: [String: Any] = [
+        kSecClass as String: kSecClassGenericPassword,
+        kSecAttrAccount as String: key,
+        kSecReturnData as String: true,
+        kSecMatchLimit as String: kSecMatchLimitOne
+    ]
+
+    var result: AnyObject?
+    let status = SecItemCopyMatching(query as CFDictionary, &result)
+    guard status == errSecSuccess,
+          let data = result as? Data,
+          let string = String(data: data, encoding: .utf8) else {
+        return nil
+    }
+    return string
 }

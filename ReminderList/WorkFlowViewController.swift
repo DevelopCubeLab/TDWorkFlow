@@ -1,6 +1,7 @@
 #if DEBUG || TESTFLIGHT
 import Foundation
 import UIKit
+import CryptoKit
 
 class WorkFlowViewController: UITableViewController {
 
@@ -53,7 +54,7 @@ class WorkFlowViewController: UITableViewController {
     }
 
     override func numberOfSections(in tableView: UITableView) -> Int {
-        return 6
+        return 7
     }
 
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
@@ -61,14 +62,16 @@ class WorkFlowViewController: UITableViewController {
         case 0:
             return 1
         case 1:
-            return isSearching ? filteredPaths.filter { unexpectedPaths.contains($0) }.count : unexpectedPaths.count
+            return 1
         case 2:
-            return isSearching ? filteredPaths.filter { runtimePaths.contains($0) }.count : runtimePaths.count
+            return isSearching ? filteredPaths.filter { unexpectedPaths.contains($0) }.count : unexpectedPaths.count
         case 3:
-            return isSearching ? filteredPaths.filter { urlSchemePaths.contains($0) }.count : urlSchemePaths.count
+            return isSearching ? filteredPaths.filter { runtimePaths.contains($0) }.count : runtimePaths.count
         case 4:
-            return isSearching ? filteredPaths.count : sortedPaths.count
+            return isSearching ? filteredPaths.filter { urlSchemePaths.contains($0) }.count : urlSchemePaths.count
         case 5:
+            return isSearching ? filteredPaths.count : sortedPaths.count
+        case 6:
             return isSearching ? filteredPaths.filter { springboardPaths.contains($0) }.count : springboardPaths.count
         default:
             return 0
@@ -80,14 +83,16 @@ class WorkFlowViewController: UITableViewController {
         case 0:
             return "Info"
         case 1:
-            return "Mismatched Results"
+            return "Detection Records"
         case 2:
-            return "Runtime Checks"
+            return "Mismatched Results"
         case 3:
-            return "URL Scheme Checks"
+            return "Runtime Checks"
         case 4:
-            return "All File Results"
+            return "URL Scheme Checks"
         case 5:
+            return "All File Results"
+        case 6:
             return "Bundle ID Checks"
         default:
             return nil
@@ -117,6 +122,10 @@ class WorkFlowViewController: UITableViewController {
             The final release version will not include this page.
             """
         case 1:
+            cell.textLabel?.numberOfLines = 0
+            cell.textLabel?.text = displayStoredDetectionInfo()
+            cell.selectionStyle = .default
+        case 2:
             let groupPaths = unexpectedPaths
             let path = isSearching ? (filteredPaths.filter { groupPaths.contains($0) })[indexPath.row] : groupPaths[indexPath.row]
             if let result = results[path] {
@@ -130,7 +139,7 @@ class WorkFlowViewController: UITableViewController {
                 let indicator = (result.work.isValid == result.expectation) ? "☑️" : "⚠️"
                 cell.textLabel?.text? += " \(indicator)"
             }
-        case 2:
+        case 3:
             let groupPaths = runtimePaths
             let path = isSearching ? (filteredPaths.filter { groupPaths.contains($0) })[indexPath.row] : groupPaths[indexPath.row]
             if let result = results[path] {
@@ -144,7 +153,7 @@ class WorkFlowViewController: UITableViewController {
                 let indicator = (result.work.isValid == result.expectation) ? "☑️" : "⚠️"
                 cell.textLabel?.text? += " \(indicator)"
             }
-        case 3:
+        case 4:
             let groupPaths = urlSchemePaths
             let path = isSearching ? (filteredPaths.filter { groupPaths.contains($0) })[indexPath.row] : groupPaths[indexPath.row]
             if let result = results[path] {
@@ -158,7 +167,7 @@ class WorkFlowViewController: UITableViewController {
                 let indicator = (result.work.isValid == result.expectation) ? "☑️" : "⚠️"
                 cell.textLabel?.text? += " \(indicator)"
             }
-        case 4:
+        case 5:
             let groupPaths = sortedPaths
             let path = isSearching ? (filteredPaths)[indexPath.row] : groupPaths[indexPath.row]
             if let result = results[path] {
@@ -172,7 +181,7 @@ class WorkFlowViewController: UITableViewController {
                 let indicator = (result.work.isValid == result.expectation) ? "☑️" : "⚠️"
                 cell.textLabel?.text? += " \(indicator)"
             }
-        case 5:
+        case 6:
             let groupPaths = springboardPaths
             let path = isSearching ? (filteredPaths.filter { groupPaths.contains($0) })[indexPath.row] : groupPaths[indexPath.row]
             if let result = results[path] {
@@ -203,6 +212,98 @@ class WorkFlowViewController: UITableViewController {
         }
 
         return cell
+    }
+
+    // Allow reset for detection records
+    override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        guard indexPath.section == 1 else { return }
+
+        let alert = UIAlertController(title: "Reset Records", message: "Are you sure you want to clear detection logs?", preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Confirm", style: .destructive) { _ in
+            UserDefaults.standard.removeObject(forKey: "WorkStatus")
+            let query: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrAccount as String: "WorkStatus"
+            ]
+            SecItemDelete(query as CFDictionary)
+            tableView.reloadData()
+        })
+        present(alert, animated: true)
+    }
+    
+    // MARK: - Display stored detection info from Keychain and UserDefaults (multi-record, with severity)
+    private func displayStoredDetectionInfo() -> String {
+        var output = ""
+
+        // Helper function to format a WorkRecordPayload
+        func formatRecords(_ source: String, payload: WorkRecordPayload) -> String {
+            var text = "[\(source)]\n"
+            text += "Low Risk Attempts: \(payload.countLow), Medium: \(payload.countMedium), High: \(payload.countHigh)\n"
+            let maxRecords = min(10, payload.records.count)
+            for (index, record) in payload.records.prefix(maxRecords).enumerated() {
+                text += "\(index + 1). [\(record.severity.rawValue.uppercased())] \(record.worktime): \(record.flowComment)\n"
+            }
+            return text + "\n"
+        }
+
+        let baseKey = "supersecretkeyforaesandhmac"
+        let hashed = SHA256.hash(data: baseKey.data(using: .utf8)!)
+        let symmetricKey = SymmetricKey(data: Data(hashed))
+
+        // Decode from UserDefaults
+        if let encodedData = UserDefaults.standard.string(forKey: "WorkStatus"),
+           let decodedData = Data(base64Encoded: encodedData),
+           decodedData.count > 32 {
+            let sealedLength = decodedData.count - 32
+            let combined = decodedData.prefix(sealedLength)
+            if let sealedBox = try? AES.GCM.SealedBox(combined: combined),
+               let decrypted = try? AES.GCM.open(sealedBox, using: symmetricKey),
+               let payload = try? JSONDecoder().decode(WorkRecordPayload.self, from: decrypted) {
+                output += formatRecords("UserDefaults Record", payload: payload)
+            } else {
+                output += "[UserDefaults Record] Failed to decode.\n"
+            }
+        } else {
+            output += "[UserDefaults Record] No detection records found.\n"
+        }
+
+        // Decode from Keychain
+        if let encodedData = loadFromKeychain("WorkStatus"),
+           let decodedData = Data(base64Encoded: encodedData),
+           decodedData.count > 32 {
+            let sealedLength = decodedData.count - 32
+            let combined = decodedData.prefix(sealedLength)
+            if let sealedBox = try? AES.GCM.SealedBox(combined: combined),
+               let decrypted = try? AES.GCM.open(sealedBox, using: symmetricKey),
+               let payload = try? JSONDecoder().decode(WorkRecordPayload.self, from: decrypted) {
+                output += formatRecords("Keychain Record", payload: payload)
+            } else {
+                output += "[Keychain Record] Failed to decode.\n"
+            }
+        } else {
+            output += "[Keychain Record] No detection records found.\n"
+        }
+
+        return output
+    }
+    
+    private func loadFromKeychain(_ key: String) -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrAccount as String: key,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess,
+              let data = result as? Data,
+              let string = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        return string
     }
 }
 
