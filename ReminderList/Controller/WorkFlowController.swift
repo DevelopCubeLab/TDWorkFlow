@@ -7,88 +7,177 @@ class WorkFlowController {
     
     private let workUtils = WorkUtils()
     
+    
+    // MARK: - Risk Evaluation & Conditional Execution
+
+    enum DetectionScope {
+        case runtime
+        case files
+        case userDefaults
+        case urlSchemes
+        case keychain
+        case systemVersion
+        case all
+    }
+
+    enum RiskLevel: String {
+        case low
+        case medium
+        case high
+        case none
+    }
+
+    /// Executes the given action if the risk level is low, after running selected detection scopes.
+    /// - Parameters:
+    ///   - scopes: Array of DetectionScope to run.
+    ///   - completion: Called with the risk level and average score.
+    ///   - action: Action to execute if risk is low.
+    func executeIfSafe(scopes: [DetectionScope], completion: @escaping (_ level: RiskLevel, _ score: Double) -> Void, action: @escaping () -> Void) {
+        var allResults = [String: WorkFlow]()
+
+        if scopes.contains(.all) || scopes.contains(.runtime) {
+            allResults.merge(WorkFlowController.performRuntimeIntegrityScan()) { _, new in new }
+        }
+        if scopes.contains(.all) || scopes.contains(.files) {
+            allResults.merge(WorkFlowController.performDefaultScan()) { _, new in new }
+        }
+        if scopes.contains(.all) || scopes.contains(.urlSchemes) {
+            allResults.merge(WorkFlowController.checkSuspiciousURLSchemes()) { _, new in new }
+        }
+        if scopes.contains(.all) || scopes.contains(.userDefaults) {
+            allResults.merge(WorkFlowController.performRuntimeIntegrityScan().filter { $0.key.hasPrefix("UserDefaults/") }) { _, new in new }
+        }
+        if scopes.contains(.all) || scopes.contains(.keychain) {
+            let keychainWork = validateInstallUUID()
+            let score = self.calculateScore(for: keychainWork, expected: true, path: "uuid_integrity")
+            allResults["Keychain/InstallUUID"] = WorkFlow(work: keychainWork, expectation: true, score: score)
+        }
+        if scopes.contains(.all) || scopes.contains(.systemVersion) {
+            let versionCheck = WorkFlowController.checkSystemVersionIntegrity()
+            let score = self.calculateScore(for: versionCheck, expected: true, path: "system_version_check")
+            allResults["Runtime/SystemVersionCheck"] = WorkFlow(work: versionCheck, expectation: true, score: score)
+        }
+        
+#if DEBUG
+        if scopes.contains(.all) || scopes.contains(.runtime){
+            allResults.merge(WorkFlowController.checkSpringBoardLaunchAccess()) { _, new in new }
+        }
+        
+#endif
+
+        // Add historical behavior from keychain as synthetic WorkFlow
+        if let encodedData = loadFromKeychain("WorkStatus"),
+           let decodedData = Data(base64Encoded: encodedData),
+           decodedData.count > 32 {
+            let sealedLength = decodedData.count - 32
+            let combined = decodedData.prefix(sealedLength)
+            let baseKey = "supersecretkeyforaesandhmac"
+            let hashed = SHA256.hash(data: baseKey.data(using: .utf8)!)
+            let symmetricKey = SymmetricKey(data: Data(hashed))
+
+            if let sealedBox = try? AES.GCM.SealedBox(combined: combined),
+               let decrypted = try? AES.GCM.open(sealedBox, using: symmetricKey),
+               let payload = try? JSONDecoder().decode(WorkRecordPayload.self, from: decrypted) {
+                
+                let totalWeight = Double(payload.countLow) * 2 + Double(payload.countMedium) * 5 + Double(payload.countHigh) * 10
+                if totalWeight > 0 {
+                    let penalty = min(30.0, totalWeight)
+                    let syntheticWork = Work(isValid: false, duration: 0, lastModifiedDiff: nil)
+                    let syntheticScore = max(0, 100.0 - penalty)
+                    allResults["Keychain/HistoryWeight"] = WorkFlow(work: syntheticWork, expectation: true, score: syntheticScore)
+                }
+            }
+        }
+        
+        // Calculate average score (includes systemVersionBaselineScore internally)
+        let scores = allResults.values.map { $0.score }
+        let average = scores.reduce(0, +) / Double(scores.count)
+
+#if DEBUG
+        print("Raw Score Average (with system version): \(average)")
+#endif
+
+        // Compute percent drop from perfect score, regardless of system version
+        let percentDrop = (100.0 - average) / 100.0
+
+#if DEBUG
+        print("Normalized Risk Percent Drop: \(percentDrop)")
+#endif
+
+        let level: RiskLevel
+        switch percentDrop {
+        case ..<0.05:
+            level = .none
+        case 0.05..<0.15:
+            level = .low
+        case 0.15..<0.35:
+            level = .medium
+        default:
+            level = .high
+        }
+
+        completion(level, average)
+
+        if level == .low || level == .none {
+            action()
+        }
+    }
+    
     /// Computes a heuristic score for a scan result based on deviation from expectation, duration, and mtime freshness.
     private func calculateScore(for work: Work, expected: Bool, path: String) -> Double {
-        var baseScore: Double = 50
+        var baseScore: Double = 100
 
-        // Positive scoring for expected result; negative for unexpected
+        // Check if the result matches expectation
         if work.isValid == expected {
-            baseScore += 3
+            baseScore -= 0 // no penalty
         } else {
+            baseScore -= 25 // base penalty
+        }
+
+        // Evaluate scan duration
+        if work.duration > 0.01 {
             baseScore -= 10
-        }
-
-        // Positive scoring for fast detection
-        if work.duration < 0.002 {
+        } else if work.duration < 0.002 {
             baseScore += 2
         }
 
-        // Positive scoring for very old files
-        if let diff = work.lastModifiedDiff, diff > 3600 * 24 * 365 {
-            baseScore += 2
-        }
-
-        // Positive scoring for known safe system paths
-        if path.hasPrefix("/bin/") || path.hasPrefix("/usr/libexec/") {
-            baseScore += 2
-        }
-
-        // Negative scoring for unexpected findings
-        if work.isValid != expected {
-            if path.contains("var/mobile/Library/Preferences/") ||
-                path.contains("var/mobile/Media/") {
+        // Evaluate file modification freshness
+        if let diff = work.lastModifiedDiff {
+            if diff < 300 {
                 baseScore -= 5
-            } else {
-                baseScore -= 15
+            } else if diff > 3600 * 24 * 365 {
+                baseScore += 2
             }
         }
 
-        if work.duration > 0.01 {
-            baseScore -= 10
-        }
-
-        if let diff = work.lastModifiedDiff, diff < 300 {
+        // Special path sensitivity
+        if path.contains("var/mobile/Library/Preferences/") || path.contains("var/mobile/Media/") {
             baseScore -= 5
         }
 
-        // Version based scoring
-        if #available(iOS 18.0, *) {
-            baseScore += 5
-        } else if #available(iOS 17.1, *) {
-            baseScore += 2
-        } else if #available(iOS 17.0, *) {
-            baseScore -= 8
-        } else if #available(iOS 16.7, *) {
-            baseScore += 1
-        } else if #available(iOS 16.6, *) {
-            baseScore -= 8
-        } else if #available(iOS 16.0, *) {
-            baseScore -= 15
-        } else if #available(iOS 15.0, *) {
-            baseScore -= 10
-        } else if #available(iOS 14.0, *) {
-            baseScore -= 9
+        // Runtime-specific scoring
+        switch path {
+        case "jit":
+            baseScore += work.isValid ? -10 : 5
+        case "sandbox":
+            baseScore += work.isValid ? 4 : -15
+        case "env":
+            baseScore += work.isValid ? 2 : -5
+        case "dylibs":
+            baseScore += work.isValid ? 2 : -20
+        default:
+            break
         }
 
-        // Noise
+        // Version based scoring
+        baseScore += systemVersionBaselineScore()
+
+        // Noise injection to avoid deterministic scoring
         let noise = Double.random(in: -1.0...1.0)
-        // Runtime-specific scoring
-        if path == "jit" {
-            // JIT is expected to be disabled; work.isValid means JIT is disabled (good)
-            if work.isValid { baseScore -= 10 } else { baseScore += 5 }
-        } else if path == "sandbox" {
-            // Sandbox escape not detected is good (work.isValid == true)
-            if work.isValid { baseScore += 4 } else { baseScore -= 15 }
-        } else if path == "env" {
-            // No suspicious env vars (work.isValid == true) is good
-            if work.isValid { baseScore += 2 } else { baseScore -= 5 }
-        } else if path == "dylibs" {
-            // No suspicious dylibs (work.isValid == true) is good
-            if work.isValid { baseScore += 2 } else { baseScore -= 20 }
-        }
+        baseScore += noise
 
 #if DEBUG
-        // Add score deduction if forbidden bundle ID launch is detected
+        // Custom debug-only penalties
         if path.hasPrefix("BundleIDCheck/Forbidden") && !work.isValid {
             baseScore -= 45
         }
@@ -97,7 +186,7 @@ class WorkFlowController {
         }
 #endif
 
-        return max(0, min(100, baseScore + noise))
+        return max(0, min(100, baseScore))
     }
     
     /// Evaluates multiple file paths against expectations and assigns a weighted score.
@@ -1136,6 +1225,28 @@ class WorkFlowController {
     
 }
 
+private func systemVersionBaselineScore() -> Double {
+    if #available(iOS 18.0, *) {
+        return 5
+    } else if #available(iOS 17.1, *) {
+        return 2
+    } else if #available(iOS 17.0, *) {
+        return -8
+    } else if #available(iOS 16.7, *) {
+        return 1
+    } else if #available(iOS 16.6, *) {
+        return -8
+    } else if #available(iOS 16.0, *) {
+        return -15
+    } else if #available(iOS 15.0, *) {
+        return -10
+    } else if #available(iOS 14.0, *) {
+        return -9
+    } else {
+        return -20
+    }
+}
+
 // MARK: - Secure Detection Record Handler
 
 enum Severity: String, Codable {
@@ -1200,21 +1311,46 @@ func storeDetectionSecurely(flowComment: String, severity: Severity = .high) {
         }
     }
 
-    // 插入新记录到开头，保留最多10条
+    // Cross-validation of storage status
+    let hasUserDefaults = UserDefaults.standard.string(forKey: "WorkStatus") != nil
+    let hasKeychain = loadFromKeychain("WorkStatus") != nil
+
+    if hasKeychain && !hasUserDefaults {
+        // Keychain exists, but UserDefaults does not => reinstalled app, keychain preserved
+        if existingPayload.countHigh > 0 {
+            // Previously had high risk behavior
+            let newRecord = WorkRecordPayload.Record(worktime: formatter.string(from: Date()), flowComment: "Reinstall detected (keychain-only), history shows prior high risk", severity: .medium)
+            existingPayload.records.insert(newRecord, at: 0)
+            existingPayload.countMedium += 1
+        } else {
+            let newRecord = WorkRecordPayload.Record(worktime: formatter.string(from: Date()), flowComment: "Reinstall detected (keychain-only), no prior high risk", severity: .low)
+            existingPayload.records.insert(newRecord, at: 0)
+            existingPayload.countLow += 1
+        }
+    }
+
+    if hasUserDefaults && !hasKeychain {
+        // UserDefaults exists, but Keychain does not => likely restored from backup
+        let newRecord = WorkRecordPayload.Record(worktime: formatter.string(from: Date()), flowComment: "Restored from backup (userdefaults-only)", severity: .low)
+        existingPayload.records.insert(newRecord, at: 0)
+        existingPayload.countLow += 1
+    }
+
+    // Insert new records to the beginning, keep up to 10
     let newRecord = WorkRecordPayload.Record(worktime: formatter.string(from: Date()), flowComment: flowComment, severity: severity)
     existingPayload.records.insert(newRecord, at: 0)
     if existingPayload.records.count > 10 {
         existingPayload.records.removeLast()
     }
 
-    // 累加次数
+    // Cumulative number of times
     switch severity {
     case .low: existingPayload.countLow += 1
     case .medium: existingPayload.countMedium += 1
     case .high: existingPayload.countHigh += 1
     }
 
-    // 加密存储
+    // Encrypted storage
     guard let jsonData = try? JSONEncoder().encode(existingPayload),
           let encoded = encryptAndSign(data: jsonData) else {
         print("[SecureStore] Failed to encode and encrypt detection payload.")

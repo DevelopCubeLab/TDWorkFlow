@@ -16,14 +16,56 @@ class MainViewController: UITableViewController {
         todoList = storage.load()
 
         tableView.register(TodoTableViewCell.self, forCellReuseIdentifier: "ReminderCell")
+        
+        // run the runtime safely check
+        WorkFlowController().executeIfSafe(scopes: [.all]) { level, score in
+            print("Risk level: \(level.rawValue), score: \(score)")
+            if level == .high {
+                let alert = UIAlertController(title: NSLocalizedString("SecurityWarning", comment: ""), message: NSLocalizedString("SecurityWarningMessage", comment: ""), preferredStyle: .alert)
+#if DEBUG || TESTFLIGHT
+                alert.addAction(UIAlertAction(title: NSLocalizedString("OK", comment: ""), style: .default, handler: { _ in
+                    exit(0)
+                }))
+                alert.addAction(UIAlertAction(title: NSLocalizedString("Check", comment: ""), style: .default) { _ in
+                    let resultVC = WorkFlowViewController()
+                    resultVC.hidesBottomBarWhenPushed = true
+                    self.navigationController?.pushViewController(resultVC, animated: true)
+                })
+#endif
+                
+#if !FOR_CHECK_WORK_FLOW
+                self.present(alert, animated: true) {
+                    // Enforce app exit after short delay, regardless of hook attempts
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
+                        exit(0)
+                    }
+                }
+#endif
+            } else if level == .medium {
+                let alert = UIAlertController(title: NSLocalizedString("SecurityWarning", comment: ""), message: NSLocalizedString("SecurityWarningMediumMessage", comment: ""), preferredStyle: .alert)
+                alert.addAction(UIAlertAction(title: NSLocalizedString("OK", comment: ""), style: .default, handler: nil))
+#if DEBUG || TESTFLIGHT
+                alert.addAction(UIAlertAction(title: NSLocalizedString("Check", comment: ""), style: .default) { _ in
+                    let resultVC = WorkFlowViewController()
+                    resultVC.hidesBottomBarWhenPushed = true
+                    self.navigationController?.pushViewController(resultVC, animated: true)
+                })
+#endif
+                self.present(alert, animated: true)
+            }
+        } action: {
+            let addButton = UIBarButtonItem(
+                image: UIImage(systemName: "plus.circle.fill", withConfiguration: self.barButtonConfiguration),
+                style: .plain,
+                target: self,
+                action: #selector(self.addNewItem)
+            )
+            addButton.tintColor = .systemOrange
 
-        let addButton = UIBarButtonItem(
-            image: UIImage(systemName: "plus.circle.fill", withConfiguration: barButtonConfiguration),
-            style: .plain,
-            target: self,
-            action: #selector(addNewItem)
-        )
-        addButton.tintColor = .systemOrange
+            DispatchQueue.main.async {
+                self.navigationItem.rightBarButtonItems?.insert(addButton, at: 0)
+            }
+        }
 
         let settingsButton = UIBarButtonItem(
             image: UIImage(systemName: "gearshape.fill", withConfiguration: barButtonConfiguration),
@@ -33,7 +75,7 @@ class MainViewController: UITableViewController {
         )
         settingsButton.tintColor = .systemOrange
 
-        navigationItem.rightBarButtonItems = [addButton, settingsButton]
+        navigationItem.rightBarButtonItems = [settingsButton]
 
         navigationItem.leftBarButtonItem = editButtonItem
         editButtonItem.image = UIImage(systemName: "arrow.up.arrow.down.circle.fill", withConfiguration: barButtonConfiguration)
