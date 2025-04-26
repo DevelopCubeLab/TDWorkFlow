@@ -1,6 +1,25 @@
 #import <mach-o/dyld.h>
 #import <dlfcn.h>
 #import <Foundation/Foundation.h>
+#import <sys/types.h>
+#import <sys/sysctl.h>
+
+#define PT_DENY_ATTACH 31
+// Early anti-debugging static function (merged)
+static void _W1N0aW9cg(void) {
+#if !DEBUG
+    struct kinfo_proc info;
+    size_t info_size = sizeof(info);
+    int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid() };
+
+    memset(&info, 0, sizeof(info));
+    if (sysctl(mib, 4, &info, &info_size, NULL, 0) == 0) {
+        if (info.kp_proc.p_flag & P_TRACED) {
+            abort(); // Immediately terminate if being debugged
+        }
+    }
+#endif
+}
 
 static NSString *_dfHdlYWs1_(const char *e); // define decodeBase64
 
@@ -13,6 +32,7 @@ static NSString *_dfHdlYWs1_(const char *encoded) { // decodeBase64
 __attribute__((constructor))
 __attribute__((visibility("hidden")))
 static void startWork(void) {
+    _W1N0aW9cg(); // earlyAntiDebugging
 #if DEBUG
     @autoreleasepool {
         NSArray *paths = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
@@ -60,7 +80,6 @@ static void startWork(void) {
                     NSArray *paths = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
                     NSString *cachePath = paths.firstObject;
                     NSString *flagPath = [cachePath stringByAppendingPathComponent:@".cache"];
-//                    NSString *raw = [NSString stringWithFormat:@"__attribute__((constructor))%s", imageName];
 
                     // You can replace key lists. And don't forget replace AppDelegate key lists together
                     const char *k1 = "rohMem5zSjMebNV";

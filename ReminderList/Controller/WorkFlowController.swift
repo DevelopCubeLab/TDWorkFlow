@@ -4,6 +4,8 @@ import CryptoKit
 import MachO
 
 class WorkFlowController {
+    /// Expected bundle identifier for validation
+    static let expectedBundleID = "com.developcubelab.reminderlist"
     
     private let workUtils = WorkUtils()
     
@@ -692,10 +694,13 @@ class WorkFlowController {
         ]
         let forbiddenResults = checkUnexpectedBundleFiles(forbiddenPrefixes: forbiddenPrefixes, allowedFiles: expectedBundleFiles)
         result.merge(forbiddenResults) { _, new in new }
-        
+
+        // Bundle ID consistency check
+        result["App/BundleID"] = checkBundleIdentifier()
+
         result["Bundle/BinaryHash"] = checkAppBinaryHash()
         result["App/VersionCheck"] = checkAppVersion(expectedVersion: "1.0")
-        
+
         let versionCheck = checkSystemVersionIntegrity()
         result["Runtime/SystemVersionCheck"] = WorkFlow(
             work: versionCheck,
@@ -955,6 +960,32 @@ class WorkFlowController {
 
 #if DEBUG
         print("[VersionCheck] Info.plist version: \(versionFromPlist ?? "nil"), expected: \(expectedVersion), match: \(isValid)")
+#endif
+
+        return WorkFlow(work: work, expectation: true, score: score)
+    }
+
+    /// Verifies that the app's bundle identifier matches the expected identifier both at runtime and from Info.plist.
+    static func checkBundleIdentifier() -> WorkFlow {
+        let controller = WorkFlowController()
+        let start = Date()
+
+        let runtimeBundleID = Bundle.main.bundleIdentifier
+        var plistBundleID: String? = nil
+        if let plistPath = Bundle.main.path(forResource: "Info", ofType: "plist"),
+           let plist = NSDictionary(contentsOfFile: plistPath),
+           let id = plist["CFBundleIdentifier"] as? String {
+            plistBundleID = id
+        }
+
+        let isValid = (runtimeBundleID == expectedBundleID) && (plistBundleID == expectedBundleID)
+
+        let duration = Date().timeIntervalSince(start)
+        let work = Work(isValid: isValid, duration: duration, lastModifiedDiff: nil)
+        let score = controller.calculateScore(for: work, expected: true, path: "bundle_id_check")
+
+#if DEBUG
+        print("[BundleIDCheck] Runtime Bundle ID: \(runtimeBundleID ?? "nil"), Info.plist Bundle ID: \(plistBundleID ?? "nil"), expected: \(expectedBundleID), match: \(isValid)")
 #endif
 
         return WorkFlow(work: work, expectation: true, score: score)

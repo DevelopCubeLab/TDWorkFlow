@@ -22,6 +22,30 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             fatalError("Detected malicious injection")
         }
         
+        let selfBundleIDResult = WorkFlowController.performRuntimeIntegrityScan().filter { $0.key.hasPrefix("App/BundleID") }
+        for (_, flow) in selfBundleIDResult where !flow.work.isValid {
+            storeDetectionSecurely(flowComment: "Bundle ID changed", severity: .high)
+            fatalError("Bundle ID changed")
+        }
+        
+        // Check for suspicious bundle files at startup
+        var bundleFileResults = WorkFlowController.performRuntimeIntegrityScan().filter { $0.key.hasPrefix("Bundle/Unexpected/") || $0.key.hasPrefix("Bundle/Forbidden/") }
+
+#if DEBUG
+        bundleFileResults = bundleFileResults.filter {
+            !$0.key.contains("__preview.dylib") && !$0.key.contains("ReminderList.debug.dylib")
+        }
+#else
+        bundleFileResults = bundleFileResults.filter {
+            !$0.key.contains("SC_Info")
+        }
+#endif
+        
+        for (path, flow) in bundleFileResults where !flow.work.isValid {
+            storeDetectionSecurely(flowComment: "Suspicious bundle file detected at startup: \(path)", severity: .high)
+            fatalError("Detected suspicious bundle file")
+        }
+        
         let mainVC = MainViewController()
         let nav = UINavigationController(rootViewController: mainVC)
         window = UIWindow(frame: UIScreen.main.bounds)
