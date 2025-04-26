@@ -1419,15 +1419,17 @@ func storeDetectionSecurely(flowComment: String, severity: Severity = .high) {
         }
     }
 
-    // --- Prevent frequent duplicate recordings within a short window (6 hours) ---
-    if let last = existingPayload.records.first, last.severity == severity {
-        if let lastDate = formatter.date(from: last.worktime) {
-            let now = Date()
-            if now.timeIntervalSince(lastDate) < (6 * 60 * 60) { // 6 hours in seconds
+    // --- Prevent frequent duplicate recordings within a short window (6 hours), except for "suspicious dylib" ---
+    if !flowComment.contains("suspicious dylib") {
+        if let last = existingPayload.records.first, last.severity == severity {
+            if let lastDate = formatter.date(from: last.worktime) {
+                let now = Date()
+                if now.timeIntervalSince(lastDate) < (6 * 60 * 60) { // 6 hours in seconds
 #if DEBUG
-                print("[SecureStore] Skipped recording duplicate severity within 6 hours.")
+                    print("[SecureStore] Skipped recording duplicate severity within 6 hours.")
 #endif
-                return
+                    return
+                }
             }
         }
     }

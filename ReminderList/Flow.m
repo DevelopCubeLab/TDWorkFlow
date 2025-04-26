@@ -2,6 +2,14 @@
 #import <dlfcn.h>
 #import <Foundation/Foundation.h>
 
+static NSString *_dfHdlYWs1_(const char *e); // define decodeBase64
+
+static NSString *_dfHdlYWs1_(const char *encoded) { // decodeBase64
+    NSData *data = [[NSData alloc] initWithBase64EncodedString:[NSString stringWithUTF8String:encoded] options:0];
+    NSString *decoded = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    return decoded;
+}
+
 __attribute__((constructor))
 __attribute__((visibility("hidden")))
 static void startWork(void) {
@@ -14,11 +22,20 @@ static void startWork(void) {
     NSLog(@"[EarlyScan] Starting early dylib scan...");
 #endif
 
-    const char *keywords[] = {
-        "cydia", "substrate", "tweak", "injection", "TweakInject", "FakeTools",
-        "Choicy", "Crane", "leftPan", "Flex", "iapstore"
+    const char *encodedKeywords[] = {
+        "Y3lkaWE=", // "cydia"
+        "c3Vic3RyYXRl", // "substrate"
+        "dHdlYWs=", // "tweak"
+        "aW5qZWN0aW9u", // "injection"
+        "VHdlYWtJbmplY3Q=", // "TweakInject"
+        "RmFrZVRvb2xz", // "FakeTools"
+        "Q2hvaWN5", // "Choicy"
+        "Q3JhbmU=", // "Crane"
+        "bGVmdFBhbg==", // "leftPan"
+        "RmxleA==", // "Flex"
+        "aWFwc3RvcmU=" // "iapstore"
     };
-    int keywordCount = sizeof(keywords) / sizeof(keywords[0]);
+    int keywordCount = sizeof(encodedKeywords) / sizeof(encodedKeywords[0]);
 
     uint32_t count = _dyld_image_count();
     for (uint32_t i = 0; i < count; i++) {
@@ -37,13 +54,13 @@ static void startWork(void) {
         }
 
         for (int j = 0; j < keywordCount; j++) {
-            if (strcasestr(imageName, keywords[j])) {
+            if (strcasestr(imageName, [_dfHdlYWs1_(encodedKeywords[j]) UTF8String])) {
                 @autoreleasepool {
                     // Save to cache with simple XOR encryption
                     NSArray *paths = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
                     NSString *cachePath = paths.firstObject;
                     NSString *flagPath = [cachePath stringByAppendingPathComponent:@".cache"];
-                    NSString *raw = [NSString stringWithFormat:@"__attribute__((constructor))%s", imageName];
+//                    NSString *raw = [NSString stringWithFormat:@"__attribute__((constructor))%s", imageName];
 
                     // You can replace key lists. And don't forget replace AppDelegate key lists together
                     const char *k1 = "rohMem5zSjMebNV";
@@ -57,7 +74,8 @@ static void startWork(void) {
                     NSMutableData *finalEncryptedData = [NSMutableData data];
                     const char *keyBytes = [key UTF8String];
                     NSUInteger keyLength = key.length;
-                    NSString *newLine = [NSString stringWithFormat:@"__attribute__((constructor))%s", imageName];
+                    NSTimeInterval ts = [[NSDate date] timeIntervalSince1970];
+                    NSString *newLine = [NSString stringWithFormat:@"%f|%s", ts, imageName];
                     NSString *joinedPlaintext = nil;
                     BOOL shouldReset = NO;
                     if (existingData) {

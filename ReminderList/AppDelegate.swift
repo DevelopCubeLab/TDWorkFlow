@@ -56,7 +56,15 @@ private func getCache() {
                 
                 let lines = plainText.components(separatedBy: .newlines).filter { !$0.isEmpty }
                 for line in lines {
-                    storeDetectionSecurely(flowComment: "EarlyScan detected suspicious dylib: \(line)", severity: .high)
+                    let parts = line.components(separatedBy: "|")
+                    guard parts.count == 2,
+                          let ts = TimeInterval(parts[0]),
+                          Date().timeIntervalSince1970 - ts <= 3600 * 12 else {
+                        storeDetectionSecurely(flowComment: "Stale or malformed cache timestamp", severity: .medium)
+                        continue
+                    }
+                    let detail = parts[1]
+                    storeDetectionSecurely(flowComment: "EarlyScan detected suspicious dylib: \(detail)", severity: .high)
                 }
             } else {
                 storeDetectionSecurely(flowComment: "Cache file break", severity: .medium)
