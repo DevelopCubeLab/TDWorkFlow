@@ -48,15 +48,15 @@ class WorkFlowViewController: UITableViewController {
             print("Risk level: \(level.rawValue), score: \(score)")
             self.mainScore = "Risk level: \(level.rawValue)\nScore: \(score)"
         } action: {}
-        #if DEBUG
-        let sbResults = WorkFlowController.checkSpringBoardLaunchAccess()
-        results.merge(sbResults) { _, new in new }
-        let sbPaths = Array(sbResults.keys).sorted()
-        springboardPaths = sbPaths
-        #else
+#if DEBUG
+        let bundleIDResults = WorkFlowController.checkSpringBoardLaunchAccess()
+        results.merge(bundleIDResults) { _, new in new }
+        let bundleIDPaths = Array(bundleIDResults.keys).sorted()
+        springboardPaths = bundleIDPaths
+#else
         let sbPaths: [String] = []
         springboardPaths = []
-        #endif
+#endif
     }
 
     override func numberOfSections(in tableView: UITableView) -> Int {

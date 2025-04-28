@@ -22,10 +22,18 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             fatalError("Detected malicious injection")
         }
         
+        // Check whether the Bundle ID has been modified
         let selfBundleIDResult = WorkFlowController.performRuntimeIntegrityScan().filter { $0.key.hasPrefix("App/BundleID") }
         for (_, flow) in selfBundleIDResult where !flow.work.isValid {
             storeDetectionSecurely(flowComment: "Bundle ID changed", severity: .high)
             fatalError("Bundle ID changed")
+        }
+        
+        // Sidely check whether the application is decrypted and modify Info.plist
+        let selfMinimumOSVersionResult = WorkFlowController.performRuntimeIntegrityScan().filter { $0.key.hasPrefix("App/MinimumOSVersion") }
+        for (_, flow) in selfMinimumOSVersionResult where !flow.work.isValid {
+            storeDetectionSecurely(flowComment: "MinimumOSVersion changed", severity: .high)
+            fatalError("MinimumOSVersion changed")
         }
         
         // Check for suspicious bundle files at startup
@@ -33,7 +41,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
 #if DEBUG
         bundleFileResults = bundleFileResults.filter {
-            !$0.key.contains("__preview.dylib") && !$0.key.contains("ReminderList.debug.dylib")
+            !$0.key.contains("__preview.dylib") && !$0.key.contains("ReminderList.debug.dylib") && !$0.key.contains("META-INF")
         }
 #else
         bundleFileResults = bundleFileResults.filter {
@@ -43,6 +51,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         
         for (path, flow) in bundleFileResults where !flow.work.isValid {
             storeDetectionSecurely(flowComment: "Suspicious bundle file detected at startup: \(path)", severity: .high)
+#if DEBUG
+            NSLog("Suspicious bundle file: \(path)")
+#endif
             fatalError("Detected suspicious bundle file")
         }
         

@@ -4,14 +4,37 @@ import CryptoKit
 import MachO
 
 class WorkFlowController {
-    /// Expected bundle identifier for validation
+    // MARK: Expected bundle identifier for validation, modify it in your app!
     static let expectedBundleID = "com.developcubelab.reminderlist"
+    static let expectedMinimumOSVersion = "14.0"
+    
+    // MARK: Add more bundle files as needed
+    static let expectedBundleFiles = [
+        "AppIcon60x60@2x.png",
+        "AppIcon76x76@2x~ipad.png",
+        "Assets.car",
+        "Base.lproj",
+        "Info.plist",
+        "PkgInfo",
+        "ReminderList",
+        "_CodeSignature",
+        "en.lproj",
+        "zh-Hans.lproj"
+    ]
+    
+    // Forbidden Info.plist keys
+    // MARK: remove your app needs config item
+    static let forbiddenInfoPlistKeys = [
+        "UISupportsDocumentBrowser", // MARK: If your app requires file sharing, please delete this rule.
+        "LSSupportsOpeningDocumentsInPlace", // MARK: If your app requires file sharing, please delete this rule.
+        "UIFileSharingEnabled",  // MARK: If your app requires file sharing, please delete this rule.
+        "SignerIdentity"
+    ]
     
     private let workUtils = WorkUtils()
     
     
     // MARK: - Risk Evaluation & Conditional Execution
-
     enum DetectionScope {
         case runtime
         case files
@@ -76,7 +99,7 @@ class WorkFlowController {
            decodedData.count > 32 {
             let sealedLength = decodedData.count - 32
             let combined = decodedData.prefix(sealedLength)
-            let baseKey = "supersecretkeyforaesandhmac"
+            let baseKey = "supersecretkeyforaesandhmac" // MARK: You can change this key
             let hashed = SHA256.hash(data: baseKey.data(using: .utf8)!)
             let symmetricKey = SymmetricKey(data: Data(hashed))
 
@@ -235,7 +258,13 @@ class WorkFlowController {
         // Improved Forbidden check: full score if no forbidden app detected, deduction if detected
         if path.hasPrefix("BundleIDCheck/Forbidden") {
             if !work.isValid {
-                baseScore -= 45 // Detected Forbidden => High risk
+                if #available(iOS 17.0.1, *) {
+                    // The current version of TrollStore cannot run on iOS 17.0 or above, so the score reduction has an impact.
+                    // But some devices such as A10 iPad or iPhone can use Checkm8 vulnerability
+                    baseScore -= 10
+                } else {
+                    baseScore -= 45 // Detected Forbidden => High risk
+                }
             } else {
                 baseScore = 100 // Did not detect forbidden app (which is expected) => full score
             }
@@ -586,8 +615,10 @@ class WorkFlowController {
             "cydia",
             "sileo",
             "zbra",
+            "xina", // xina jialbreak
             "filza", // com.tigisoftware.Filza
             "adm", // com.tigisoftware.ADManager
+            "icleaner", // icleaner pro
             "santander", // com.serena.santanderfm
             "mterminal", // com.officialscheduler.mterminal
             "trapp", // wiki.qaq.trapp
@@ -651,6 +682,7 @@ class WorkFlowController {
         let dylibResults = suspiciousDylibWorkflows(controller: controller)
  
         var result: [String: WorkFlow] = [
+            "Runtime/Info.plist": checkInfoPlistIntegrity(),
             "Runtime/Sandbox": WorkFlow(work: workSandbox, expectation: true, score: controller.calculateScore(for: workSandbox, expected: true, path: "sandbox")),
             "Runtime/Environment": WorkFlow(work: workEnv, expectation: true, score: controller.calculateScore(for: workEnv, expected: true, path: "env")),
             "Runtime/Fork": WorkFlow(work: forkCapability, expectation: true, score: controller.calculateScore(for: forkCapability, expected: true, path: "fork")),
@@ -659,26 +691,15 @@ class WorkFlowController {
         ]
         
         result.merge(dylibResults) { _, new in new }
-        var expectedBundleFiles = [ // MARK: Add more bundle files as needed
-            "AppIcon60x60@2x.png",
-            "AppIcon76x76@2x~ipad.png",
-            "Assets.car",
-            "Base.lproj",
-            "Info.plist",
-            "PkgInfo",
-            "ReminderList",
-            "_CodeSignature",
-            "en.lproj",
-            "zh-Hans.lproj"
-        ]
         
+        var runTimeExpectedBundleFiles = expectedBundleFiles
 #if DEBUG
-        expectedBundleFiles.append("embedded.mobileprovision") // TestFlight and App Store environment not use this file
+        runTimeExpectedBundleFiles.append("embedded.mobileprovision") // TestFlight and App Store environment not use this file
 #else
-        expectedBundleFiles.append("SC_Info")
+        runTimeExpectedBundleFiles.append("SC_Info")
 #endif
         
-        let bundleResults = checkBundleFiles(expectedCount: expectedBundleFiles.count, expectedFiles: expectedBundleFiles)
+        let bundleResults = checkBundleFiles(expectedCount: runTimeExpectedBundleFiles.count, expectedFiles: runTimeExpectedBundleFiles)
         result.merge(bundleResults) { _, new in new }
         // Files that should not appear in bundle
         let forbiddenPrefixes = ["lib", // This depends on whether your app includes
@@ -688,15 +709,17 @@ class WorkFlowController {
                                  "FakeTools", // com.xuuz.faketools.plist
                                  "NATHANLR", // NathanLR mid-jailbreak
                                  "bak", // TrollFools process file
+                                 ".rebuild", // BootStrap inject generator file
                                  "dylib", // If the app uses dynamic libraries, it needs to be excluded here
                                  "使用全能签签名", // Traces left by the re-signature apps
                                  "SignedByEsign" // Traces left by the re-signature apps
         ]
-        let forbiddenResults = checkUnexpectedBundleFiles(forbiddenPrefixes: forbiddenPrefixes, allowedFiles: expectedBundleFiles)
+        let forbiddenResults = checkUnexpectedBundleFiles(forbiddenPrefixes: forbiddenPrefixes, allowedFiles: runTimeExpectedBundleFiles)
         result.merge(forbiddenResults) { _, new in new }
 
         // Bundle ID consistency check
         result["App/BundleID"] = checkBundleIdentifier()
+        result["App/MinimumOSVersion"] = checkBundleMinimumOSVersion()
 
         result["Bundle/BinaryHash"] = checkAppBinaryHash()
         result["App/VersionCheck"] = checkAppVersion(expectedVersion: "1.0")
@@ -727,7 +750,11 @@ class WorkFlowController {
             "cydia",
             "troll",
             "DisableSecureTextEntryEnabled",
-            ""
+            "AutoClickSwitchState",
+            "Slideleftback",
+            "LockScreenEnabled",
+            "FakeProxySettingsEnabled",
+            "com.tien0246.ProtectedApp",
         ]
         
         // Run UserDefaults detection
@@ -877,6 +904,9 @@ class WorkFlowController {
         let countCorrect = (foundCount == expectedCount) || (foundCount + 1 == expectedCount)
         let countWork = Work(isValid: countCorrect, duration: 0, lastModifiedDiff: nil)
         let countScore = controller.calculateScore(for: countWork, expected: true, path: "bundle_count")
+#if DEBUG
+        print("Expected bundle file Count: \(expectedCount) TotalFoundCount: \(foundCount)")
+#endif
         result["Bundle/FileCountComparison(Ensure no files are lost) Expected Count: \(expectedCount) TotalFoundCount: \(foundCount)"] = WorkFlow(work: countWork, expectation: true, score: countScore)
  
         // Compare actual bundle total file count with expected count, allow 1 discrepancy for SC_Info
@@ -986,6 +1016,30 @@ class WorkFlowController {
 
 #if DEBUG
         print("[BundleIDCheck] Runtime Bundle ID: \(runtimeBundleID ?? "nil"), Info.plist Bundle ID: \(plistBundleID ?? "nil"), expected: \(expectedBundleID), match: \(isValid)")
+#endif
+
+        return WorkFlow(work: work, expectation: true, score: score)
+    }
+    
+    static func checkBundleMinimumOSVersion() -> WorkFlow {
+        let controller = WorkFlowController()
+        let start = Date()
+
+        var plistMinimumOSVersion: String? = nil
+        if let plistPath = Bundle.main.path(forResource: "Info", ofType: "plist"),
+           let plist = NSDictionary(contentsOfFile: plistPath),
+           let min = plist["MinimumOSVersion"] as? String {
+            plistMinimumOSVersion = min
+        }
+
+        let isValid = (plistMinimumOSVersion == expectedMinimumOSVersion)
+
+        let duration = Date().timeIntervalSince(start)
+        let work = Work(isValid: isValid, duration: duration, lastModifiedDiff: nil)
+        let score = controller.calculateScore(for: work, expected: true, path: "bundle_MinimumOSVersion_check")
+
+#if DEBUG
+        print("[OSVersionCheck] MinimumOSVersion: \(plistMinimumOSVersion ?? "nil"), Expected: \(expectedMinimumOSVersion)")
 #endif
 
         return WorkFlow(work: work, expectation: true, score: score)
@@ -1193,6 +1247,33 @@ class WorkFlowController {
         
         return results
     }
+    
+    /// Checks if Info.plist contains suspicious keys (e.g., allowing Document access)
+    static func checkInfoPlistIntegrity() -> WorkFlow {
+        let controller = WorkFlowController()
+        let start = Date()
+
+        var suspiciousCount = 0
+
+        if let infoDict = Bundle.main.infoDictionary {
+            for key in forbiddenInfoPlistKeys {
+                if let value = infoDict[key] as? Bool, value == true {
+                    suspiciousCount += 1
+                }
+            }
+        }
+
+        let duration = Date().timeIntervalSince(start)
+        let isValid = (suspiciousCount == 0)
+        let work = Work(isValid: isValid, duration: duration, lastModifiedDiff: nil)
+        let score = controller.calculateScore(for: work, expected: true, path: "info_plist_integrity")
+
+#if DEBUG
+        print("[InfoPlistCheck] Suspicious Info.plist keys detected: \(suspiciousCount)")
+#endif
+
+        return WorkFlow(work: work, expectation: true, score: score)
+    }
 
     // MARK: - UserDefaults Value Integrity Check
     static func checkUserDefaultsIntegrity(allowedKeys: [String], forbiddenKeys: [String]) -> [String: WorkFlow] {
@@ -1241,7 +1322,7 @@ class WorkFlowController {
     }
     
 #if DEBUG
-    ///
+    // MARK: - Mention!!!!! This method may cause your app to be rejected by App Store review!!!!
     /// Performs SpringBoard launch access verification using fixed black/white lists.
     static func checkSpringBoardLaunchAccess() -> [String: WorkFlow] {
         let controller = WorkFlowController()
@@ -1249,7 +1330,15 @@ class WorkFlowController {
         
         let forbiddenBundleIDs = [
             "com.opa334.TrollStore",
+            "com.Alfie.TrollInstallerX", // TrollStore Installer
+            "om.34306.trollforce", // TrollStar outdated TrollStore Installer
+            "com.straight-tamago.misakaRS", // Misaka a use KFD and MDC tweak app and outdated TrollStore Installer
             "com.opa334.Dopamine",
+            "com.xina.jailbreak", // Xina jailbreak
+            "com.nathan.nathanlr",
+            "pisshill.usprebooter", // Serotoin
+            "com.roothide.Bootstrap", // BootStrap
+            "com.RootHide.varclean",  // varClean
             "org.coolstar.SileoStore",
             "xyz.willy.Zebra",
             "com.saurik.Cydia",
@@ -1258,6 +1347,8 @@ class WorkFlowController {
             "com.tigisoftware.ADManager",
             "wiki.qaq.TrollFools",
             "com.huami.TrollFools",
+            "com.netskao.dumpdecrypter",
+            "com.serena.AppIndex", // AppIndex
             "wiki.qaq.trapp",
             "com.amywhile.Aemulo",
             "cn.bswbw.AppsDump",
@@ -1278,15 +1369,25 @@ class WorkFlowController {
             "app.legizmo",
             "xc.lzsxcl.Trollo2e",
             "chaoge.ChargeLimiter",
-            "com.developlab.BatteryInfo", // I developed an app myself.
+            "com.developlab.BatteryInfo", // I developed some apps myself.
+            "com.developlab.iDiskTidy",
             "com.developlab.iDiskTidy.ClearResidue",
+            "com.developlab.RebootTools",
+            "com.developlab.ExtractApp",
             "ch.xxtou.hudapp",
             "com.leemin.helium",
             "com.leemin.helium",
             "com.mumu.iosshare",
             "com.cisc0freak.cardio",
             "ca.bomberfish.CAPerfHudSwift",
-            "com.lenglengyu.supervip"
+            "com.mika.LocationSimulation",
+            "com.nrkvv.wifiscanner", // WiFi Scanner
+            "com.itaysoft.wifilist", // WIFI List
+            "cn.bswbw.xflw",
+            "com.netskao.injectwechat",
+            "ru.domo.cocoatop64", // CocoaTop
+            "com.lenglengyu.supervip",
+            "com.cydia.love.AppStoreTools" // AppStoreTools
         ]
         
         let allowedBundleIDs = [
@@ -1334,6 +1435,7 @@ class WorkFlowController {
         return results
     }
 
+    // MARK: - Mention!!!!! This method may cause your app to be rejected by App Store review!!!!
     private static func launchBundleID(_ bundleIdentifier: String) -> Int32 {
         guard let handle = dlopen("/System/Library/PrivateFrameworks/SpringBoardServices.framework/SpringBoardServices", RTLD_NOW) else {
             return -1
@@ -1349,6 +1451,7 @@ class WorkFlowController {
         return function(bundleIdentifier as NSString, nil, nil, nil, false)
     }
 
+    // MARK: - Mention!!!!! This method may cause your app to be rejected by App Store review!!!!
     private static func isSBSLaunchFunctionHooked() -> Bool {
         guard let handle = dlopen("/System/Library/PrivateFrameworks/SpringBoardServices.framework/SpringBoardServices", RTLD_NOW),
               let sym = dlsym(handle, "SBSLaunchApplicationWithIdentifierAndURLAndLaunchOptions") else {
