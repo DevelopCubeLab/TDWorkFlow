@@ -297,6 +297,8 @@ class WorkFlowController {
         // Special path sensitivity
         if path.contains("var/mobile/Library/Preferences/") || path.contains("var/mobile/Media/") {
             baseScore -= 5
+        } else if path.contains("MobileSubstrate") || path.contains("DynamicLibraries") {
+            baseScore -= 35
         } else if path.contains("Filza") || path.contains("filza") {
             baseScore -= 15
         } else {
@@ -357,13 +359,21 @@ class WorkFlowController {
             // MARK: -------------------- switch status --------------------
             
             // MARK: - Jailbreak indicators (expected not to exist)
-            "/var/jb": false,
+            "/usr/lib/TweakInject": false,
+            "/Library/MobileSubstrate/DynamicLibraries": false,
+            "/var/jb": false, // rootless path
             "/var/jb/Applications": false,
             "/var/jb/usr/bin": false,
             "/var/jb/private/etc": false,
+            "/var/jb/MobileSubstrate/": false,
+            "/var/jb/MobileSubstrate/DynamicLibraries": false,
             "/var/jb/Applications/Sileo.app": false,
+            "/var/jb/Applications/Zebra.app": false,
             "/var/jb/Applications/Filza.app": false,
-            "/Applications/Sileo.app": false,
+            "/var/jb/Applications/CraneApplication.app": false,
+            "/var/jb/Applications/iCleaner.app": false,
+            "/var/jb/Applications/TRApp.app": false,
+            "/Applications/Sileo.app": false, // rootfull path
             "/Applications/Cydia.app": false,
             "/Applications/Filza.app": false,
             "/Applications/Zebra.app": false,
@@ -375,7 +385,6 @@ class WorkFlowController {
             "/private/var/lib/apt": false,
             "/usr/sbin/sshd": false,
             "/usr/bin/ssh": false,
-            
             "/Applications/blackra1n.app": false,
             "/Applications/FakeCarrier.app": false,
             "/Applications/Icy.app": false,
@@ -825,22 +834,37 @@ class WorkFlowController {
     
     /// Returns a mapping of suspicious dylib paths to their corresponding WorkFlow.
     private static func suspiciousDylibWorkflows(controller: WorkFlowController) -> [String: WorkFlow] {
-        let suspectKeywords = ["cydia", "substrate", "tweak", "injection", "TweakInject", "Choicy", "Crane", "leftPan", "Flex", "iapstore"]
+        let suspectKeywords = [
+            "cydia", "substrate", "tweak", "injection", "TweakInject",
+            "Choicy", "Crane", "leftPan", "Flex", "iapstore",
+            "DynamicLibraries", "MobileSubstrate", "pspawn", "libhooker",
+            "libSandy", "libkrw", "libjb", "libjailbreak"
+        ]
 
         var result: [String: WorkFlow] = [:]
         let count = _dyld_image_count()
-#if DEBUG
-        print("dylib count: \(count)")
+#if DEBUG || FOR_CHECK_WORK_FLOW
+//        print("----> ReminderList dylib count: \(count)")
+        NSLog("----> ReminderList dylib count: \(count)")
 #endif
         for i in 0..<count {
             if let name = _dyld_get_image_name(i) {
-#if DEBUG
-                print("\(i) dylib name: \(String(cString: name))")
+#if DEBUG || FOR_CHECK_WORK_FLOW
+//                print("----> ReminderList \(i) dylib name: \(String(cString: name))")
+                NSLog("----> ReminderList \(i) dylib name: \(String(cString: name))")
 #endif
                 let path = String(cString: name)
                 // Skip system libraries to avoid false positives
                 let safePrefixes = ["/System/Library/", "/usr/lib/", "/usr/lib/system/", "/System/iOSSupport/System/Library/"]
                 if safePrefixes.contains(where: { path.hasPrefix($0) }) {
+                    continue
+                }
+                // Explicit check for pspawn_payload
+                if path.lowercased().contains("pspawn_payload") {
+                    storeDetectionSecurely(flowComment: "Detected suspicious dylib: \(path)")
+                    let work = Work(isValid: false, duration: 0, lastModifiedDiff: nil)
+                    let score = controller.calculateScore(for: work, expected: true, path: "dylibs")
+                    result["Runtime/Dylibs/\(path)"] = WorkFlow(work: work, expectation: true, score: score)
                     continue
                 }
                 for keyword in suspectKeywords {

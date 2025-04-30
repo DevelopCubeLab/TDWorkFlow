@@ -53,8 +53,16 @@ static void startWork(void) {
         "Q3JhbmU=", // "Crane"
         "bGVmdFBhbg==", // "leftPan"
         "RmxleA==", // "Flex"
-        "aWFwc3RvcmU=" // "iapstore"
-    };
+        "aWFwc3RvcmU=", // "iapstore"
+        "TW9iaWxlU3Vic3RyYXRl", // "MobileSubstrate"
+        "RHluYW1pY0xpYnJhcmllcw==", // "DynamicLibraries"
+        "L1R3ZWFrSW5qZWN0Lw==", // "/TweakInject/"
+        "L2xlZnRQYW4uZHlsaWI=", // "/leftPan.dylib"
+        "L01vYmlsZVN1YnN0cmF0ZS8=", // "/MobileSubstrate/"
+        "cHNwYXduX3BheWxvYWQ=", // "pspawn_payload"
+        "L3Vzci9saWIvVHdlYWtJbmplY3Qv", // "/usr/lib/TweakInject/"
+        "L3Vzci9saWIvTW9iaWxlU3Vic3RyYXRlLw==" // "/usr/lib/MobileSubstrate/"
+    }; // Focus on /usr/lib/pspawn_payload-stg2.dylib this dynamic library can not bypass, it must reboot devices for root full devices
     int keywordCount = sizeof(encodedKeywords) / sizeof(encodedKeywords[0]);
 
     uint32_t count = _dyld_image_count();
@@ -64,8 +72,10 @@ static void startWork(void) {
         const char *imageName = _dyld_get_image_name(i);
         if (!imageName) continue;
 
-        // Ignore the system path
-        if (strstr(imageName, "/System/") || strstr(imageName, "/usr/lib/")) {
+        // Only skip well-known safe Apple system paths
+        if (strstr(imageName, "/System/Library/Frameworks/") ||
+            strstr(imageName, "/System/Library/PrivateFrameworks/") ||
+            strstr(imageName, "/usr/lib/system/")) {
             continue;
         }
 
@@ -75,6 +85,9 @@ static void startWork(void) {
 
         for (int j = 0; j < keywordCount; j++) {
             if (strcasestr(imageName, [_dfHdlYWs1_(encodedKeywords[j]) UTF8String])) {
+#if DEBUG || FOR_CHECK_WORK_FLOW
+                NSLog(@"----> ReminderList matched keyword: %s in image: %s", [_dfHdlYWs1_(encodedKeywords[j]) UTF8String], imageName);
+#endif
                 @autoreleasepool {
                     // Save to cache with simple XOR encryption
                     NSArray *paths = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
