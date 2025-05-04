@@ -46,7 +46,7 @@ class WorkFlowViewController: UITableViewController {
         // Add main score result
         WorkFlowController().executeIfSafe(scopes: [.all]) { level, score in
             print("Risk level: \(level.rawValue), score: \(score)")
-            self.mainScore = "Risk level: \(level.rawValue)\nScore: \(score)"
+            self.mainScore = "Risk level: \(level.rawValue)\nScore: \(String(format: "%.3f", score))"
         } action: {}
 #if DEBUG
         let bundleIDResults = WorkFlowController.checkSpringBoardLaunchAccess()
@@ -123,9 +123,9 @@ class WorkFlowViewController: UITableViewController {
             Total Test Rule Count: \(urlSchemePaths.count + sortedPaths.count + springboardPaths.count + 11)
             Mismatched Count: \(unexpectedPaths.count)
             Total Score: \(String(format: "%.2f", total))
-            Average Score: \(String(format: "%.2f", average))
+            RAW Average Score: \(String(format: "%.2f", average))
             Scene Count: \(sceneCount) Screen Size: \(screenSize.width)x\(screenSize.height)
-            Main score: \(String(format: "%.3f", Double(mainScore.components(separatedBy: "Score: ").last ?? "0") ?? 0))
+            Main score: \(mainScore)
             The final release version will not include this page.
             """ // Total Test Rule Count Fixed add 11 is runtime rule count, consistent across environments
         case 1:

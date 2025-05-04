@@ -95,6 +95,11 @@ class SettingsViewController: UIViewController, UITableViewDelegate, UITableView
             self.navigationController?.pushViewController(resultVC, animated: true)
         }
 #endif
+        if indexPath.section == 0 && indexPath.row == 1 {
+            if let url = URL(string: "https://github.com/DevelopCubeLab/TDWorkFlow") {
+                UIApplication.shared.open(url, options: [:], completionHandler: nil)
+            }
+        }
         
     }
     
