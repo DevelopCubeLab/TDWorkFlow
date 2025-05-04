@@ -1,0 +1,9 @@
+Package: com.developcubelab.simpleinject
+Name: SimpleInject
+Version: 1.0
+Architecture: iphoneos-arm
+Description: Simple Inject
+Maintainer: developlab
+Author: developlab
+Section: Tweaks
+Depends: mobilesubstrate (>= 0.9.5000)

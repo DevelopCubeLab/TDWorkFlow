@@ -91,15 +91,15 @@ class WorkFlowViewController: UITableViewController {
         case 1:
             return "Detection Records"
         case 2:
-            return "Mismatched Results"
+            return "Mismatched Results (\(unexpectedPaths.count))"
         case 3:
-            return "Runtime Checks"
+            return "Runtime Checks (\(runtimePaths.count))"
         case 4:
-            return "URL Scheme Checks"
+            return "URL Scheme Checks (\(urlSchemePaths.count))"
         case 5:
-            return "All File Results"
+            return "All File Results (\(sortedPaths.count))"
         case 6:
-            return "Bundle ID Checks"
+            return "Bundle ID Checks (\(springboardPaths.count))"
         default:
             return nil
         }
@@ -120,14 +120,14 @@ class WorkFlowViewController: UITableViewController {
             cell.textLabel?.numberOfLines = 0
             cell.textLabel?.text = """
             System Version: \(version)
+            Total Test Rule Count: \(urlSchemePaths.count + sortedPaths.count + springboardPaths.count + 11)
             Mismatched Count: \(unexpectedPaths.count)
             Total Score: \(String(format: "%.2f", total))
             Average Score: \(String(format: "%.2f", average))
-            Screen Size: \(screenSize.width)x\(screenSize.height)
-            Scene Count: \(sceneCount)
-            Main score: \(mainScore)
+            Scene Count: \(sceneCount) Screen Size: \(screenSize.width)x\(screenSize.height)
+            Main score: \(String(format: "%.3f", Double(mainScore.components(separatedBy: "Score: ").last ?? "0") ?? 0))
             The final release version will not include this page.
-            """
+            """ // Total Test Rule Count Fixed add 11 is runtime rule count, consistent across environments
         case 1:
             cell.textLabel?.numberOfLines = 0
             cell.textLabel?.text = displayStoredDetectionInfo()

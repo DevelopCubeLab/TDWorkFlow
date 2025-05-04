@@ -1,0 +1,16 @@
+{
+	Filter = {
+		Bundles = (
+			"com.openai.chatgpt",
+			"com.burbn.barcelona",
+			"com.wbd.stream",
+			"com.google.Maps",
+			"com.intuit.turbotax",
+			"com.unionpay.chsp",
+			"com.ss.iphone.ugc.Live.lite",
+			"com.deepseek.chat",
+			"com.dnewleaf.app.ios.vic",
+			"se.onlinepizza.iPhone.OnlinePizza",
+		);
+	};
+}

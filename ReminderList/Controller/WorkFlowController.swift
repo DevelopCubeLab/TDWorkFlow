@@ -513,6 +513,8 @@ class WorkFlowController {
             
             "/var/mobile/Library/Preferences/ca.bomberfish.SwiftTop.plist": false,
             
+            "/var/mobile/Library/Preferences/net.sourceloc.TrollTools.plist": false,
+            
             "/var/mobile/Library/Preferences/ch.xxtou.hudapp.plist": false,
             
             "/var/mobile/Library/Preferences/chaoge.ChargeLimiter.plist": false, // chaoge.ChargeLimiter
@@ -572,6 +574,7 @@ class WorkFlowController {
             "/private/var/mobile/Library/SplashBoard/Snapshots/com.ichitaso.otadisablerts": false,
             "/private/var/mobile/Library/SplashBoard/Snapshots/com.ui.speed": false,
             "/private/var/mobile/Library/SplashBoard/Snapshots/ru.domo.cocoatop64": false,
+            "/private/var/mobile/Library/SplashBoard/Snapshots/net.sourceloc.TrollTools": false,
             
             "/private/var/mobile/Library/Saved Application State/ca.bomberfish.SwiftTop.savedState": false,
             "/private/var/mobile/Library/Saved Application State/chaoge.AlDente.savedState": false,
@@ -1056,13 +1059,21 @@ class WorkFlowController {
             plistMinimumOSVersion = min
         }
 
-        let isValid = (plistMinimumOSVersion == expectedMinimumOSVersion)
+        // Due to a known issue where TestFlight may increase the MinimumOSVersion automatically (e.g., from 14.0 to 15.0),
+        // we relax the check to ensure the actual version is not *lower* than expected.
+        // Higher versions are acceptable and usually safe for runtime.
+        var isValid = false
+        if let actual = plistMinimumOSVersion,
+           let expected = Double(expectedMinimumOSVersion),
+           let actualDouble = Double(actual) {
+            isValid = actualDouble >= expected
+        }
 
         let duration = Date().timeIntervalSince(start)
         let work = Work(isValid: isValid, duration: duration, lastModifiedDiff: nil)
         let score = controller.calculateScore(for: work, expected: true, path: "bundle_MinimumOSVersion_check")
 
-#if DEBUG
+#if DEBUG || FOR_CHECK_WORK_FLOW
         print("[OSVersionCheck] MinimumOSVersion: \(plistMinimumOSVersion ?? "nil"), Expected: \(expectedMinimumOSVersion)")
 #endif
 
@@ -1372,6 +1383,8 @@ class WorkFlowController {
             "wiki.qaq.TrollFools",
             "com.huami.TrollFools",
             "com.netskao.dumpdecrypter",
+            "com.netskao.ringtonesmanager",
+            "net.sourceloc.TrollTools", // TrollTools
             "com.serena.AppIndex", // AppIndex
             "wiki.qaq.trapp",
             "com.amywhile.Aemulo",
